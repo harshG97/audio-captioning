@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4         
 #SBATCH --gres=gpu:1
 #SBATCH --mem-per-gpu=32G            
-#SBATCH --time=03:00:00                  
+#SBATCH --time=02:00:00                  
 #SBATCH --output=$SCRATCH/DLProject/logs/%j.out
 #SBATCH --error=$SCRATCH/DLProject/logs/%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL

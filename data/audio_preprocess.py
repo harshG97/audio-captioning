@@ -69,11 +69,12 @@ def build_file_list(audio_dir, captions_csv, dataset_type):
     elif dataset_type == "audiocaps":
         # AudioCaps naming pattern: youtube_id+start_time.wav
         df = pd.read_csv(captions_csv)
-        # Deduplicate
-        unique_ids = df.drop_duplicates(subset=["youtube_id"])
+        df = df.dropna(subset=["youtube_id", "start_time"])
+        df["start_time"] = df["start_time"].astype(int)
+        unique_ids = df.drop_duplicates(subset=["youtube_id", "start_time"])
         for _, row in unique_ids.iterrows():
             youtube_id = row["youtube_id"]
-            start_time = int(row["start_time"])
+            start_time = row["start_time"]
             audio_id = f"{youtube_id}_{start_time}"
             file_path = os.path.join(audio_dir, f"{audio_id}.wav")
  
