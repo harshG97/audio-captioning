@@ -1,9 +1,11 @@
 """
 datastore.py
 
-Loads AudioCaps captions and manages the retrieval datastore.
-At this stage, embeddings are placeholders (None).
-Once CLAP text encoder is ready, call build_embeddings() to populate them.
+Loads captions from CSV and manages the retrieval datastore.
+
+Text embeddings must match CLAP joint projection dim (typically 512): see
+``clap_embeddings.encode_texts`` or ``precompute_text_embeddings.py`` to build
+``.npy`` matrices aligned with ``ClapModel.get_audio_features`` queries.
 """
 
 import os
@@ -65,9 +67,11 @@ class Datastore:
             embed_fn: callable that takes a list of strings and returns
                       np.ndarray of shape (N, d).
 
-        Example (once CLAP is ready):
-            from clap_wrapper import get_text_embeddings
-            datastore.build_embeddings(get_text_embeddings)
+        Example:
+
+            from clap_embeddings import build_text_embed_fn
+
+            datastore.build_embeddings(build_text_embed_fn())
         """
         captions = [e.caption for e in self.entries]
         embeddings = embed_fn(captions)  # (N, d)
