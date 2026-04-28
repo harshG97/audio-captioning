@@ -11,7 +11,7 @@ query_embedding comes from CLAP audio encoder — plug in later.
 """
 
 import numpy as np
-from datastore import Datastore
+from .datastore import Datastore
 
 
 def _cosine_similarity_matrix(query: np.ndarray, matrix: np.ndarray) -> np.ndarray:

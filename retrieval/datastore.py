@@ -30,25 +30,13 @@ class Datastore:
     # ------------------------------------------------------------------
 
     def load_from_csv(self, csv_path: str) -> None:
-        """Load captions from CSV and ensure each row has an access_id."""
+        """Load captions from a clean CSV file (train/val/test)."""
         df = pd.read_csv(csv_path)
 
-        has_access_id = "access_id" in df.columns
-        if not has_access_id:
-            required_cols = {"youtube_id", "start_time", "caption"}
-            assert required_cols.issubset(df.columns), (
-                f'CSV must contain either "access_id"+"caption" or '
-                f'"youtube_id"+"start_time"+"caption". Found: {set(df.columns)}'
-            )
-            # Build access_id on the fly for compatibility with existing code.
-            df["access_id"] = (
-                df["youtube_id"].astype(str) + "_" + df["start_time"].astype(str)
-            )
-        else:
-            required_cols = {"access_id", "caption"}
-            assert required_cols.issubset(df.columns), (
-                f"CSV must contain columns: {required_cols}. Found: {set(df.columns)}"
-            )
+        required_cols = {"access_id", "caption"}
+        assert required_cols.issubset(df.columns), (
+            f"CSV must contain columns: {required_cols}. Found: {set(df.columns)}"
+        )
 
         for _, row in df.iterrows():
             entry = DatastoreEntry(

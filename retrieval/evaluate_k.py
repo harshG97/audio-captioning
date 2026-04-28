@@ -16,8 +16,8 @@ BLEU / CIDEr scores on generated captions.
 
 import numpy as np
 import pandas as pd
-from datastore import Datastore
-from retriever import TopKRetriever, MMRRetriever, _cosine_similarity_matrix
+from .datastore import Datastore
+from .retriever import TopKRetriever, MMRRetriever, _cosine_similarity_matrix
 
 
 # ------------------------------------------------------------------
