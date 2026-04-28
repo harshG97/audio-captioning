@@ -76,18 +76,14 @@ def _resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarr
 
 
 def get_text_embeddings(text_list: List[str]) -> torch.Tensor:
-    if len(text_list) == 0:
-        model, _ = _load_clap()
-        return torch.empty((0, model.config.projection_dim), dtype=torch.float32)
-
     model, processor = _load_clap()
     inputs = processor(text=text_list, return_tensors="pt", padding=True, truncation=True)
     inputs = {k: v.to(_get_device()) for k, v in inputs.items()}
 
     with torch.no_grad():
-        # Use the dedicated CLAP text encoder API for projected embeddings.
-        text_embeds_tensor = model.get_text_features(**inputs)
-    return text_embeds_tensor
+        text_embeds = model.get_text_features(**inputs)
+
+    return text_embeds
 
 
 def get_audio_embedding(wav_path: str) -> np.ndarray:
