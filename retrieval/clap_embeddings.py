@@ -88,9 +88,6 @@ def get_text_embeddings(text_list: List[str]) -> torch.Tensor:
         # Use the dedicated CLAP text encoder API for projected embeddings.
         text_embeds_tensor = model.get_text_features(**inputs)
 
-    if not isinstance(text_embeds_tensor, torch.Tensor):
-        raise TypeError("CLAP text embeddings must be returned as a torch.Tensor.")
-
     expected_dim = model.config.projection_dim
     if text_embeds_tensor.shape[1] != expected_dim:
         raise ValueError(
