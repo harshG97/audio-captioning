@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
-from .clap_embeddings import get_text_embeddings
+import torch
+from transformers import AutoProcessor, ClapModel
 
 
 def _build_access_id_if_missing(df: pd.DataFrame) -> pd.DataFrame:
@@ -40,8 +40,20 @@ def main() -> None:
     if "caption" not in df.columns:
         raise ValueError(f"CSV must contain 'caption' column. Found: {set(df.columns)}")
 
+    model = ClapModel.from_pretrained("laion/clap-htsat-fused")
+    processor = AutoProcessor.from_pretrained("laion/clap-htsat-fused")
+
     captions = df["caption"].astype(str).tolist()
-    embeddings = get_text_embeddings(captions)
+    inputs = processor(
+        text=captions,
+        return_tensors="pt",
+        padding=True,
+        truncation=True
+    )
+
+    with torch.no_grad():
+        embeddings = model.get_text_features(**inputs)
+
     embeddings = embeddings.cpu().numpy().astype(np.float32)
     if embeddings.shape[0] != len(captions):
         raise ValueError(
