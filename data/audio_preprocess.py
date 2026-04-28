@@ -1,25 +1,21 @@
 """
-audio_preprocess.py — Extract CLAP audio features and cache to HDF5.
+audio_preprocess.py — Extract CLAP audio encoder features and cache to HDF5.
 
-Two formats (``--feature_format``):
-
-- **joint** (default): ``ClapModel.get_audio_features`` → one vector per clip
-  shape **(projection_dim,)**, typically **512**, aligned with CLAP **text**
-  embeddings for retrieval. Output file name: ``{dataset}_{split}_joint.hdf5``.
-
-- **sequence**: ``ClapAudioModel`` last hidden state reshaped to **(64, 768)** for
-  downstream sequence models — **not** comparable to text embeddings.
-
-Run ONCE before training / retrieval; cached outputs are deterministic.
+Run this ONCE before training. The CLAP encoder is frozen, so outputs
+never change. Caching avoids recomputing them every epoch.
 
 Usage:
-    # Retrieval-aligned joint embeddings (same space as CLAP text features):
-    python audio_preprocess.py \\
-        --audio_dir ... --captions_csv ... --output_dir ... \\
-        --dataset audiocaps --split train --feature_format joint
+    python audio_preprocess.py \
+        --audio_dir /scratch/team/recap/data/clotho/development \
+        --captions_csv /scratch/team/recap/data/clotho/clotho_captions_development.csv \
+        --output_path /scratch/team/recap/features/train.hdf5 \
+        --dataset clotho
 
-    # Legacy sequence features for models that consume (64, 768):
-    python audio_preprocess.py ... --feature_format sequence
+    python audio_preprocess.py \
+        --audio_dir /scratch/team/recap/data/clotho/evaluation \
+        --captions_csv /scratch/team/recap/data/clotho/clotho_captions_evaluation.csv \
+        --output_path /scratch/team/recap/features/test.hdf5 \
+        --dataset clotho
 """
 
 import argparse
@@ -30,7 +26,7 @@ import librosa
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
-from transformers import AutoProcessor, ClapAudioModel, ClapModel
+from transformers import ClapAudioModel, AutoProcessor
  
  
 def load_audio(file_path, target_sr=48000):
@@ -98,101 +94,57 @@ def build_file_list(audio_dir, captions_csv, dataset_type):
     return file_list
  
  
-def encode_sequence_to_hdf5(
-    file_list, model: ClapAudioModel, processor, device, output_path, batch_size=1
-):
+def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=1):
     """
-    Extract sequence features (64, 768) per clip — not aligned with CLAP text space.
+    Extract features and write immediately to an HDF5 file.
+    Each audio_id becomes a dataset key.
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     model.eval()
-
+ 
     seen_ids = set()
-
+ 
     with h5py.File(output_path, "w") as h5f:
-        for idx in tqdm(range(0, len(file_list), batch_size), desc="Extracting sequence features"):
+        for idx in tqdm(range(0, len(file_list), batch_size), desc="Extracting features"):
             batch = file_list[idx:idx + batch_size]
-
+ 
             audio_ids = [item[0] for item in batch]
             file_paths = [item[1] for item in batch]
-
+ 
+            # Load and resample all audio in this batch
             waveforms = [load_audio(fp)[0] for fp in file_paths]
-
+ 
+            # Process batch through the CLAP feature extractor
             inputs = processor(
                 audios=waveforms,
                 sampling_rate=48000,
                 return_tensors="pt",
-                padding=True,
+                padding=True
             )
             inputs = {k: v.to(device) for k, v in inputs.items()}
-
+ 
             with torch.no_grad():
                 outputs = model(**inputs)
-
+ 
+            # last_hidden_state shape: (batch, seq_len, hidden_dim)
+            # Apply flatten + permute to get shape (batch, 64, 768)
             encodings = torch.flatten(outputs.last_hidden_state, 2)
             encodings = encodings.permute(0, 2, 1).detach().cpu().numpy()
-
+ 
+            # Write each encoding to HDF5, skipping duplicates
             for audio_id, encoding in zip(audio_ids, encodings):
                 if audio_id not in seen_ids:
                     h5f.create_dataset(str(audio_id), data=encoding)
                     seen_ids.add(audio_id)
-
+ 
     print(f"Saved {len(seen_ids)} entries to {output_path}")
-
+ 
+    # Verify by reading back a sample entry
     with h5py.File(output_path, "r") as h5f:
         sample_id = list(h5f.keys())[0]
         sample_shape = h5f[sample_id][()].shape
         print(f"Sample entry '{sample_id}': shape = {sample_shape}")
-        print(f"  Expected (sequence mode): (64, 768)")
-
-
-def encode_joint_to_hdf5(
-    file_list, model: ClapModel, processor, device, output_path, batch_size=8
-):
-    """
-    Extract joint embedding (projection_dim,) per clip via ``get_audio_features`` —
-    same space as ``ClapModel.get_text_features`` for retrieval.
-    """
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    model.eval()
-
-    seen_ids = set()
-    proj_dim = model.config.projection_dim
-
-    with h5py.File(output_path, "w") as h5f:
-        for idx in tqdm(range(0, len(file_list), batch_size), desc="Extracting joint embeddings"):
-            batch = file_list[idx:idx + batch_size]
-
-            audio_ids = [item[0] for item in batch]
-            file_paths = [item[1] for item in batch]
-
-            waveforms = [load_audio(fp)[0] for fp in file_paths]
-
-            inputs = processor(
-                audios=waveforms,
-                sampling_rate=48000,
-                return_tensors="pt",
-                padding=True,
-            )
-            inputs = {k: v.to(device) for k, v in inputs.items()}
-
-            with torch.no_grad():
-                feats = model.get_audio_features(**inputs)
-
-            feats_np = feats.detach().cpu().numpy().astype(np.float32)
-
-            for audio_id, row in zip(audio_ids, feats_np):
-                if audio_id not in seen_ids:
-                    h5f.create_dataset(str(audio_id), data=row)
-                    seen_ids.add(audio_id)
-
-    print(f"Saved {len(seen_ids)} entries to {output_path}")
-
-    with h5py.File(output_path, "r") as h5f:
-        sample_id = list(h5f.keys())[0]
-        sample_shape = h5f[sample_id][()].shape
-        print(f"Sample entry '{sample_id}': shape = {sample_shape}")
-        print(f"  Expected (joint mode): ({proj_dim},)")
+        print(f"  Expected: (64, 768)")
  
  
 def main():
@@ -214,40 +166,23 @@ def main():
                     help="Which split to process")
     parser.add_argument("--batch_size", type=int, default=1,
                     help="Number of audio files to process at once")
-    parser.add_argument(
-        "--feature_format",
-        type=str,
-        choices=["joint", "sequence"],
-        default="joint",
-        help="joint: (projection_dim,) aligned with CLAP text; sequence: (64,768) encoder states",
-    )
     args = parser.parse_args()
-
+ 
+    # Set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-
+ 
+    # Load model and processor
     print(f"Loading CLAP model: {args.encoder_name}")
+    model = ClapAudioModel.from_pretrained(args.encoder_name).to(device)
     processor = AutoProcessor.from_pretrained(args.encoder_name)
-
+ 
+    # Build file list and verify files exist
     file_list = build_file_list(args.audio_dir, args.captions_csv, args.dataset)
-    os.makedirs(args.output_dir, exist_ok=True)
-
-    if args.feature_format == "joint":
-        model = ClapModel.from_pretrained(args.encoder_name).to(device)
-        suffix = "_joint"
-        bs = max(args.batch_size, 1)
-        encode_joint_to_hdf5(
-            file_list, model, processor, device,
-            os.path.join(args.output_dir, f"{args.dataset}_{args.split}{suffix}.hdf5"),
-            batch_size=bs,
-        )
-    else:
-        model = ClapAudioModel.from_pretrained(args.encoder_name).to(device)
-        encode_sequence_to_hdf5(
-            file_list, model, processor, device,
-            os.path.join(args.output_dir, f"{args.dataset}_{args.split}.hdf5"),
-            batch_size=args.batch_size,
-        )
+ 
+    # Extract features and save to HDF5
+    output_path = os.path.join(args.output_dir, f"{args.dataset}_{args.split}.hdf5")
+    encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=args.batch_size)
  
     print("Done.")
  
