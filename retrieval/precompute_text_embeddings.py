@@ -52,11 +52,10 @@ def main() -> None:
     )
 
     with torch.no_grad():
-        outputs = model.text_model(
+        embeddings = model.get_text_features(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"]
         )
-        embeddings = outputs.pooler_output
 
     embeddings = embeddings.cpu().numpy().astype(np.float32)
     if embeddings.shape[0] != len(captions):
