@@ -83,7 +83,6 @@ def get_text_embeddings(text_list):
         padding=True,
         truncation=True
     )
-    inputs = {k: v.to(_get_device()) for k, v in inputs.items()}
 
     with torch.no_grad():
         text_embeds = model.get_text_features(**inputs)
