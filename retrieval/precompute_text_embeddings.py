@@ -53,6 +53,7 @@ def main() -> None:
 
     with torch.no_grad():
         embeddings = model.get_text_features(**inputs)
+        print("TYPE:", type(embeddings))
 
     embeddings = embeddings.cpu().numpy().astype(np.float32)
     if embeddings.shape[0] != len(captions):
