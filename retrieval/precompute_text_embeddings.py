@@ -52,10 +52,10 @@ def main() -> None:
     )
 
     with torch.no_grad():
-        outputs = model(**inputs)         
-        embeddings = outputs.text_embeds  
-
-    print("DEBUG TYPE:", type(embeddings))
+        embeddings = model.get_text_features(
+        input_ids=inputs["input_ids"],
+        attention_mask=inputs["attention_mask"]
+        )
 
     embeddings = embeddings.cpu().numpy().astype(np.float32)
     if embeddings.shape[0] != len(captions):
