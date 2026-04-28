@@ -81,13 +81,17 @@ def get_text_embeddings(text_list: List[str]) -> np.ndarray:
         return np.empty((0, model.config.projection_dim), dtype=np.float32)
 
     model, processor = _load_clap()
-    batch = processor(text=text_list, return_tensors="pt", padding=True, truncation=True)
-    batch = {k: v.to(_get_device()) for k, v in batch.items()}
+    inputs = processor(text=text_list, return_tensors="pt", padding=True, truncation=True)
+    inputs = {k: v.to(_get_device()) for k, v in inputs.items()}
 
     with torch.no_grad():
-        text_embeds = model.get_text_features(**batch)
+        # Use the dedicated CLAP text encoder API for projected embeddings.
+        text_embeds_tensor = model.get_text_features(**inputs)
 
-    text_embeds = text_embeds.detach().cpu().numpy().astype(np.float32)
+    if not isinstance(text_embeds_tensor, torch.Tensor):
+        raise TypeError("CLAP text embeddings must be returned as a torch.Tensor.")
+
+    text_embeds = text_embeds_tensor.detach().cpu().numpy().astype(np.float32)
     expected_dim = model.config.projection_dim
     if text_embeds.shape[1] != expected_dim:
         raise ValueError(
