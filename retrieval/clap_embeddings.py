@@ -75,9 +75,14 @@ def _resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarr
     return resampled.astype(np.float32)
 
 
-def get_text_embeddings(text_list: List[str]) -> torch.Tensor:
+def get_text_embeddings(text_list):
     model, processor = _load_clap()
-    inputs = processor(text=text_list, return_tensors="pt", padding=True, truncation=True)
+    inputs = processor(
+        text=text_list,
+        return_tensors="pt",
+        padding=True,
+        truncation=True
+    )
     inputs = {k: v.to(_get_device()) for k, v in inputs.items()}
 
     with torch.no_grad():
