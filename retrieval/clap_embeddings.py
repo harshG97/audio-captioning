@@ -75,10 +75,10 @@ def _resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarr
     return resampled.astype(np.float32)
 
 
-def get_text_embeddings(text_list: List[str]) -> np.ndarray:
+def get_text_embeddings(text_list: List[str]) -> torch.Tensor:
     if len(text_list) == 0:
         model, _ = _load_clap()
-        return np.empty((0, model.config.projection_dim), dtype=np.float32)
+        return torch.empty((0, model.config.projection_dim), dtype=torch.float32)
 
     model, processor = _load_clap()
     inputs = processor(text=text_list, return_tensors="pt", padding=True, truncation=True)
@@ -91,13 +91,12 @@ def get_text_embeddings(text_list: List[str]) -> np.ndarray:
     if not isinstance(text_embeds_tensor, torch.Tensor):
         raise TypeError("CLAP text embeddings must be returned as a torch.Tensor.")
 
-    text_embeds = text_embeds_tensor.detach().cpu().numpy().astype(np.float32)
     expected_dim = model.config.projection_dim
-    if text_embeds.shape[1] != expected_dim:
+    if text_embeds_tensor.shape[1] != expected_dim:
         raise ValueError(
-            f"Unexpected text embedding dimension: {text_embeds.shape[1]} != {expected_dim}"
+            f"Unexpected text embedding dimension: {text_embeds_tensor.shape[1]} != {expected_dim}"
         )
-    return text_embeds
+    return text_embeds_tensor
 
 
 def get_audio_embedding(wav_path: str) -> np.ndarray:

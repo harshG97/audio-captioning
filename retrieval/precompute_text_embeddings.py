@@ -42,6 +42,7 @@ def main() -> None:
 
     captions = df["caption"].astype(str).tolist()
     embeddings = get_text_embeddings(captions)
+    embeddings = embeddings.cpu().numpy().astype(np.float32)
     if embeddings.shape[0] != len(captions):
         raise ValueError(
             f"Embedding row count mismatch: {embeddings.shape[0]} != {len(captions)}"
