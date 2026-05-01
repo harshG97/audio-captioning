@@ -148,13 +148,16 @@ def main() -> None:
 
     cache = json.loads(Path(args.retrieval_cache).read_text())
 
+    # Group references by access_id (val/test clips have multiple gold captions)
+    references_by_id: dict[str, list[str]] = {}
+    for _, row in df.iterrows():
+        references_by_id.setdefault(str(row["access_id"]), []).append(str(row["caption"]))
+
     predictions: dict[str, dict] = {}
     with h5py.File(args.hdf5_path, "r") as h5f:
         available = set(h5f.keys())
-        for _, row in tqdm(df.iterrows(), total=len(df), desc="generate"):
-            access_id = str(row["access_id"])
-            if access_id not in available or access_id not in cache:
-                continue
+        unique_ids = [aid for aid in references_by_id if aid in available and aid in cache]
+        for access_id in tqdm(unique_ids, desc="generate"):
             retrieved = cache[access_id]
             prompt = build_prompt(retrieved)
             prompt_ids = _build_prompt_ids(tokenizer, prompt, args.max_prompt_length)
@@ -174,8 +177,10 @@ def main() -> None:
                 device=device,
             )
 
-            entry = predictions.setdefault(access_id, {"references": [], "prediction": pred})
-            entry["references"].append(str(row["caption"]))
+            predictions[access_id] = {
+                "references": references_by_id[access_id],
+                "prediction": pred,
+            }
 
     out = Path(args.output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
