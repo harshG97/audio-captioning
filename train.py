@@ -15,7 +15,7 @@ from transformers import Trainer, TrainingArguments
 
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
-from model.build_recap import build_recap
+from model.build_recap import ATTENTION_SIZE_TO_REDUCE_FACTOR, build_recap
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,8 +31,39 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--encoder_name", type=str, default="laion/clap-htsat-fused")
     p.add_argument("--decoder_name", type=str, default="gpt2")
-    p.add_argument("--cross_attention_reduce_factor", type=int, default=1)
     p.add_argument("--max_length", type=int, default=128)
+
+    # Cross-attention size: pick ONE of these (or neither for default reduce_factor=1).
+    attn = p.add_mutually_exclusive_group()
+    attn.add_argument(
+        "--cross_attention_reduce_factor", type=int, default=None,
+        help="Bottleneck factor for cross-attention Q/K/V projections. "
+             "Higher = smaller and cheaper cross-attention. Default: 1.")
+    attn.add_argument(
+        "--attention_size", type=float, default=None,
+        choices=list(ATTENTION_SIZE_TO_REDUCE_FACTOR.keys()),
+        help="Cross-attention parameter budget in millions; maps to a reduce factor "
+             "(28->1, 14->2, 7->4, 3.5->8, 1.75->16).")
+
+    p.add_argument(
+        "--train_decoder", action="store_true",
+        help="Fine-tune the entire GPT-2 decoder. Default: train cross-attention "
+             "sublayers + ln_cross_attn only.")
+
+    # Retrieval metadata recorded onto the saved checkpoint config so reloads
+    # remember how it was trained. Strict: required when --rag is set.
+    p.add_argument(
+        "--rag", action=argparse.BooleanOptionalAction, default=True,
+        help="Whether retrieval-augmented prefixes are in use. Pass --no-rag for "
+             "the empty-cache baseline.")
+    p.add_argument("--retrieval_k", type=int, default=None,
+                   help="Number of retrieved captions per query (required with --rag).")
+    p.add_argument("--retrieval_strategy", type=str, default=None,
+                   choices=["topk", "mmr"],
+                   help="Retrieval strategy used to build the cache (required with --rag).")
+    p.add_argument("--retrieval_mmr_lambda", type=float, default=None,
+                   help="MMR relevance/diversity tradeoff (required when "
+                        "--retrieval_strategy mmr).")
 
     p.add_argument("--per_device_train_batch_size", type=int, default=16)
     p.add_argument("--per_device_eval_batch_size", type=int, default=16)
@@ -48,7 +79,27 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_workers", type=int, default=2)
     p.add_argument("--fp16", action="store_true")
     p.add_argument("--bf16", action="store_true")
-    return p.parse_args()
+    args = p.parse_args()
+
+    # Resolve attention-size flags.
+    if args.attention_size is not None:
+        args.cross_attention_reduce_factor = ATTENTION_SIZE_TO_REDUCE_FACTOR[args.attention_size]
+    elif args.cross_attention_reduce_factor is None:
+        args.cross_attention_reduce_factor = 1
+
+    # Strict retrieval-metadata validation.
+    if args.rag:
+        missing = []
+        if args.retrieval_k is None:
+            missing.append("--retrieval_k")
+        if args.retrieval_strategy is None:
+            missing.append("--retrieval_strategy")
+        if args.retrieval_strategy == "mmr" and args.retrieval_mmr_lambda is None:
+            missing.append("--retrieval_mmr_lambda (required with --retrieval_strategy mmr)")
+        if missing:
+            p.error("--rag is set; the following are required: " + ", ".join(missing))
+
+    return args
 
 
 def main() -> None:
@@ -59,7 +110,16 @@ def main() -> None:
         decoder_name=args.decoder_name,
         cross_attention_reduce_factor=args.cross_attention_reduce_factor,
         freeze_encoder=True,
+        train_decoder=args.train_decoder,
     )
+
+    # Record retrieval metadata onto the config so the checkpoint remembers it.
+    model.config.rag = args.rag
+    if args.rag:
+        model.config.retrieval_k = args.retrieval_k
+        model.config.retrieval_strategy = args.retrieval_strategy
+        if args.retrieval_strategy == "mmr":
+            model.config.retrieval_mmr_lambda = args.retrieval_mmr_lambda
 
     train_ds = RecapDataset(
         csv_path=args.train_csv,
