@@ -27,6 +27,8 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from transformers import ClapAudioModel, AutoProcessor
+
+from model.device import best_device
  
  
 def load_audio(file_path, target_sr=48000):
@@ -168,8 +170,8 @@ def main():
                     help="Number of audio files to process at once")
     args = parser.parse_args()
  
-    # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Set device (cuda > mps > cpu)
+    device = best_device()
     print(f"Using device: {device}")
  
     # Load model and processor
