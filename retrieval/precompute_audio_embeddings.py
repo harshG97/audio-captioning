@@ -25,6 +25,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor, ClapModel
 
 from data.access_id import DATASETS, build_access_id_column
+from model.device import best_device
 
 TARGET_SR = 48000
 
@@ -70,7 +71,8 @@ def main() -> None:
     df = df.loc[keep].reset_index(drop=True)
     paths = [p for p, k in zip(paths, keep) if k]
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = best_device()
+    print(f"Using device: {device}")
     model = ClapModel.from_pretrained(args.clap_model).to(device)
     model.eval()
     processor = AutoProcessor.from_pretrained(args.clap_model)

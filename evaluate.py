@@ -26,6 +26,7 @@ from transformers import AutoTokenizer
 from transformers.modeling_outputs import BaseModelOutput
 
 from data.access_id import DATASETS, build_access_id_column
+from model.device import best_device
 from model.recap import RECAP
 from retrieval.prompt_builder import build_prompt
 
@@ -125,7 +126,8 @@ def generate_caption(
 def main() -> None:
     args = parse_args()
 
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = torch.device(args.device) if args.device else best_device()
+    print(f"Using device: {device}")
     tokenizer = AutoTokenizer.from_pretrained(args.checkpoint)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

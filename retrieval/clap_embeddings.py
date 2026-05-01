@@ -8,6 +8,8 @@ import numpy as np
 import torch
 from transformers import AutoProcessor, ClapModel
 
+from model.device import best_device
+
 MODEL_NAME = "laion/clap-htsat-fused"
 TARGET_SAMPLE_RATE = 48000
 
@@ -19,7 +21,7 @@ _DEVICE: torch.device | None = None
 def _get_device() -> torch.device:
     global _DEVICE
     if _DEVICE is None:
-        _DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        _DEVICE = best_device()
     return _DEVICE
 
 

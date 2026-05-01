@@ -9,6 +9,7 @@ import torch
 from transformers import AutoProcessor, ClapModel
 
 from data.access_id import DATASETS, build_access_id_column
+from model.device import best_device
 
 
 def main() -> None:
@@ -29,7 +30,8 @@ def main() -> None:
     if "caption" not in df.columns:
         raise ValueError(f"CSV must contain 'caption' column. Found: {set(df.columns)}")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = best_device()
+    print(f"Using device: {device}")
     model = ClapModel.from_pretrained("laion/clap-htsat-fused").to(device)
     model.eval()
     processor = AutoProcessor.from_pretrained("laion/clap-htsat-fused")
