@@ -13,6 +13,7 @@ PROMPT_TEMPLATE = (
     "Audios similar to this audio sounds like: {retrieved}. "
     "This audio sounds like:"
 )
+BASELINE_PROMPT = "This audio sounds like:"
 
 
 def build_prompt(retrieved_captions: list[str]) -> str:
@@ -20,11 +21,15 @@ def build_prompt(retrieved_captions: list[str]) -> str:
     Build the RECAP prompt string from retrieved captions.
 
     Args:
-        retrieved_captions: list of caption strings from retriever
+        retrieved_captions: list of caption strings from retriever.
+            If empty, returns the no-retrieval baseline prompt
+            ("This audio sounds like:") so the same training/eval code path
+            can be used for an ablation without retrieval.
     Returns:
         prompt string ready to feed into GPT-2 tokenizer
     """
-    assert len(retrieved_captions) > 0, "Need at least one retrieved caption."
+    if not retrieved_captions:
+        return BASELINE_PROMPT
     joined = ", ".join(retrieved_captions)
     return PROMPT_TEMPLATE.format(retrieved=joined)
 
