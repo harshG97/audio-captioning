@@ -71,6 +71,19 @@ def main() -> None:
     parser.add_argument("--k", type=int, default=4)
     parser.add_argument("--strategy", type=str, default="topk", choices=["topk", "mmr"])
     parser.add_argument("--mmr_lambda", type=float, default=0.7)
+    parser.add_argument(
+        "--role",
+        type=str,
+        default="eval",
+        choices=["train", "eval"],
+        help=(
+            "train: queries and datastore are the same train pool; full overlap "
+            "is expected and self-exclusion handles it. "
+            "eval: queries are val/test and the datastore is train (or another "
+            "external pool); zero overlap expected. The script aborts on "
+            "unexpected overlap as a leakage guard."
+        ),
+    )
     args = parser.parse_args()
 
     if args.k < 1:
@@ -99,6 +112,23 @@ def main() -> None:
 
     ds_access_ids = ds_df["access_id"].astype(str).to_numpy()
     ds_captions = ds_df["caption"].astype(str).tolist()
+
+    overlap = len(set(query_ids) & set(ds_access_ids.tolist()))
+    if args.role == "eval" and overlap > 0:
+        raise SystemExit(
+            f"Refusing to build cache: {overlap} query access_id(s) appear in the "
+            f"datastore. With --role eval the datastore must contain no eval-side "
+            f"clips (leakage guard). If you intended in-domain training retrieval, "
+            f"pass --role train; otherwise check that you did not pass val/test as "
+            f"the datastore."
+        )
+    if args.role == "train" and overlap == 0:
+        print(
+            "[WARN] --role train but query/datastore have zero access_id overlap. "
+            "This is fine for cross-domain training (queries=AudioCaps, "
+            "datastore=Clotho), unexpected for in-domain."
+        )
+    print(f"[info] query/datastore access_id overlap: {overlap}")
 
     query_norm = _l2_normalize(query_emb)
     ds_norm = _l2_normalize(ds_emb)

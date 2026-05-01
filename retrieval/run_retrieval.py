@@ -25,6 +25,13 @@ def main() -> None:
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument("--strategy", type=str, default="topk", choices=["topk"])
     parser.add_argument("--dataset", type=str, default="audiocaps", choices=DATASETS)
+    parser.add_argument(
+        "--exclude_access_id",
+        type=str,
+        default=None,
+        help="If the wav corresponds to a clip already in the indexed CSV, pass "
+             "its access_id here to mask out its captions before top-k.",
+    )
     args = parser.parse_args()
 
     if args.k <= 0:
@@ -60,6 +67,12 @@ def main() -> None:
         )
 
     similarities = _cosine_similarity_matrix(query_embedding, text_embeddings)
+    if args.exclude_access_id is not None:
+        ids = df["access_id"].astype(str).to_numpy()
+        mask = ids == args.exclude_access_id
+        if not mask.any():
+            print(f"[WARN] --exclude_access_id {args.exclude_access_id!r} not found in CSV.")
+        similarities = np.where(mask, -np.inf, similarities)
     top_k = min(args.k, len(captions))
     top_indices = np.argsort(-similarities)[:top_k]
 
