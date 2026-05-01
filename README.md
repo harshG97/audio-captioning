@@ -23,8 +23,13 @@ of the retrieval cache JSON fed to `train.py` / `evaluate.py`.
 ```bash
 conda env create -f env.yml
 conda activate audio
-pip install torch transformers h5py
-pip install pycocoevalcap   # for BLEU/METEOR/ROUGE/CIDEr/SPICE/SPIDEr
+```
+
+`torch` is installed via pip inside the env. On CUDA hardware you may want
+to reinstall against your CUDA version, e.g.:
+
+```bash
+pip install --upgrade --index-url https://download.pytorch.org/whl/cu121 torch
 ```
 
 GPU/MPS auto-detected by `model/device.py`. Drop `--bf16` from the training
