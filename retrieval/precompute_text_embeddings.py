@@ -8,26 +8,15 @@ import pandas as pd
 import torch
 from transformers import AutoProcessor, ClapModel
 
-
-def _build_access_id_if_missing(df: pd.DataFrame) -> pd.DataFrame:
-    if "access_id" in df.columns:
-        return df
-
-    required_cols = {"youtube_id", "start_time"}
-    if not required_cols.issubset(df.columns):
-        raise ValueError(
-            f"CSV missing required columns to build access_id: {required_cols}. "
-            f"Found: {set(df.columns)}"
-        )
-    df = df.copy()
-    df["access_id"] = df["youtube_id"].astype(str) + "_" + df["start_time"].astype(str)
-    return df
+from data.access_id import DATASETS, build_access_id_column
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Precompute CLAP text embeddings from train CSV.")
     parser.add_argument("--csv_path", type=str, default="data/train.csv")
     parser.add_argument("--output_path", type=str, default="text_train.npy")
+    parser.add_argument("--dataset", type=str, default="audiocaps", choices=DATASETS)
+    parser.add_argument("--batch_size", type=int, default=64)
     args = parser.parse_args()
 
     csv_path = Path(args.csv_path)
@@ -35,36 +24,37 @@ def main() -> None:
         raise FileNotFoundError(f"CSV not found: {csv_path}")
 
     df = pd.read_csv(csv_path)
-    df = _build_access_id_if_missing(df)
+    df = build_access_id_column(df, args.dataset)
 
     if "caption" not in df.columns:
         raise ValueError(f"CSV must contain 'caption' column. Found: {set(df.columns)}")
 
-    model = ClapModel.from_pretrained("laion/clap-htsat-fused")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = ClapModel.from_pretrained("laion/clap-htsat-fused").to(device)
+    model.eval()
     processor = AutoProcessor.from_pretrained("laion/clap-htsat-fused")
 
     captions = df["caption"].astype(str).tolist()
-    inputs = processor(
-        text=captions,
-        return_tensors="pt",
-        padding=True,
-        truncation=True
-    )
 
+    chunks: list[np.ndarray] = []
     with torch.no_grad():
-        embeddings = model.get_text_features(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs["attention_mask"]
-        )
+        for start in range(0, len(captions), args.batch_size):
+            batch = captions[start : start + args.batch_size]
+            inputs = processor(
+                text=batch, return_tensors="pt", padding=True, truncation=True
+            )
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            embeds = model.get_text_features(**inputs)
+            chunks.append(embeds.cpu().numpy().astype(np.float32))
 
-    embeddings = embeddings.cpu().numpy().astype(np.float32)
+    embeddings = np.concatenate(chunks, axis=0)
     if embeddings.shape[0] != len(captions):
         raise ValueError(
             f"Embedding row count mismatch: {embeddings.shape[0]} != {len(captions)}"
         )
 
     output_path = Path(args.output_path)
-    np.save(output_path, embeddings.astype(np.float32))
+    np.save(output_path, embeddings)
     print(f"Saved text embeddings: {output_path} with shape {embeddings.shape}")
 
 
