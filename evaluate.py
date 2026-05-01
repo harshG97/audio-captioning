@@ -42,6 +42,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max_new_tokens", type=int, default=40)
     p.add_argument("--num_beams", type=int, default=1)
     p.add_argument("--max_prompt_length", type=int, default=96)
+    p.add_argument("--length_penalty", type=float, default=1.0,
+                   help="Beam-search length normalization exponent. score / n**alpha. "
+                        "1.0 = pure mean log-prob (default); <1 favors shorter, >1 favors longer.")
+    p.add_argument("--no_repeat_ngram_size", type=int, default=0,
+                   help="Forbid generating n-grams of this size that already appeared in the "
+                        "generated suffix. 0 disables blocking (default).")
     p.add_argument("--device", type=str, default=None)
     return p.parse_args()
 
@@ -51,6 +57,32 @@ def _build_prompt_ids(tokenizer, prompt: str, max_prompt_length: int) -> List[in
     if len(ids) > max_prompt_length:
         ids = ids[-max_prompt_length:]
     return ids
+
+
+def _ban_repeated_ngrams(
+    logits: torch.Tensor,            # (vocab,)
+    sequence: torch.Tensor,          # (1, L) -- single hypothesis
+    n: int,
+    suffix_start: int,               # only block n-grams generated AFTER this index
+) -> torch.Tensor:
+    """In-place return of logits with banned next-token ids set to -inf so that
+    no n-gram of size `n` from the *generated suffix* repeats. n <= 0 is a no-op."""
+    if n <= 0:
+        return logits
+    seq = sequence[0].tolist()[suffix_start:]
+    if len(seq) < n - 1:
+        return logits
+    prefix = tuple(seq[-(n - 1):]) if n > 1 else tuple()
+    banned: set[int] = set()
+    for i in range(len(seq) - n + 1):
+        if tuple(seq[i:i + n - 1]) == prefix:
+            banned.add(seq[i + n - 1])
+    if not banned:
+        return logits
+    logits = logits.clone()
+    for tok in banned:
+        logits[tok] = float("-inf")
+    return logits
 
 
 @torch.no_grad()
@@ -64,9 +96,12 @@ def generate_caption(
     max_new_tokens: int,
     num_beams: int,
     device: torch.device,
+    length_penalty: float = 1.0,
+    no_repeat_ngram_size: int = 0,
 ) -> str:
     encoder_outputs = BaseModelOutput(last_hidden_state=encoder_hidden.to(device))
     initial = torch.tensor([[decoder_start_id, *prompt_ids]], dtype=torch.long, device=device)
+    suffix_start = 1 + len(prompt_ids)            # generated tokens begin here
 
     if num_beams <= 1:
         cur = initial
@@ -76,16 +111,18 @@ def generate_caption(
                 decoder_input_ids=cur,
                 return_dict=True,
             )
-            next_id = int(out.logits[0, -1].argmax().item())
+            logits = out.logits[0, -1]
+            logits = _ban_repeated_ngrams(logits, cur, no_repeat_ngram_size, suffix_start)
+            next_id = int(logits.argmax().item())
             cur = torch.cat([cur, torch.tensor([[next_id]], device=device)], dim=1)
             if next_id == eos_id:
                 break
-        gen_ids = cur[0, 1 + len(prompt_ids):].tolist()
+        gen_ids = cur[0, suffix_start:].tolist()
         if gen_ids and gen_ids[-1] == eos_id:
             gen_ids = gen_ids[:-1]
         return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
 
-    # Beam search (length-normalized log-probs).
+    # Beam search with length-normalized log-probs: score / n**length_penalty.
     beams = [(0.0, initial.clone(), False)]            # (score, sequence, is_done)
     for _ in range(max_new_tokens):
         if all(done for _, _, done in beams):
@@ -100,7 +137,9 @@ def generate_caption(
                 decoder_input_ids=seq,
                 return_dict=True,
             )
-            log_probs = torch.log_softmax(out.logits[0, -1], dim=-1)
+            logits = out.logits[0, -1]
+            logits = _ban_repeated_ngrams(logits, seq, no_repeat_ngram_size, suffix_start)
+            log_probs = torch.log_softmax(logits, dim=-1)
             top_lp, top_idx = log_probs.topk(num_beams)
             for lp, tok in zip(top_lp.tolist(), top_idx.tolist()):
                 new_seq = torch.cat([seq, torch.tensor([[tok]], device=device)], dim=1)
@@ -109,15 +148,20 @@ def generate_caption(
 
         def length_norm(item: tuple[float, torch.Tensor, bool]) -> float:
             s, sq, _ = item
-            n = sq.shape[1] - 1 - len(prompt_ids)
-            return s / max(1, n)
+            n = max(1, sq.shape[1] - suffix_start)
+            return s / (n ** length_penalty)
 
         candidates.sort(key=length_norm, reverse=True)
         beams = candidates[:num_beams]
 
-    best = max(beams, key=lambda item: (item[0] / max(1, item[1].shape[1] - 1 - len(prompt_ids))))
+    def final_score(item: tuple[float, torch.Tensor, bool]) -> float:
+        s, sq, _ = item
+        n = max(1, sq.shape[1] - suffix_start)
+        return s / (n ** length_penalty)
+
+    best = max(beams, key=final_score)
     seq = best[1]
-    gen_ids = seq[0, 1 + len(prompt_ids):].tolist()
+    gen_ids = seq[0, suffix_start:].tolist()
     if gen_ids and gen_ids[-1] == eos_id:
         gen_ids = gen_ids[:-1]
     return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
@@ -175,6 +219,8 @@ def main() -> None:
                 max_new_tokens=args.max_new_tokens,
                 num_beams=args.num_beams,
                 device=device,
+                length_penalty=args.length_penalty,
+                no_repeat_ngram_size=args.no_repeat_ngram_size,
             )
 
             predictions[access_id] = {
