@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import os
+from concurrent.futures import ProcessPoolExecutor
 import h5py
 import torch
 import librosa
@@ -96,15 +97,22 @@ def build_file_list(audio_dir, captions_csv, dataset_type):
     return file_list
  
  
-def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=1):
+def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=1, num_workers=0):
     """
     Extract features and write immediately to an HDF5 file.
     Each audio_id becomes a dataset key.
+
+    Args:
+        num_workers: number of parallel processes for audio loading.
+                     0 = sequential (original behavior).
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     model.eval()
  
     seen_ids = set()
+
+    def _load_one(fp):
+        return load_audio(fp)[0]
  
     with h5py.File(output_path, "w") as h5f:
         for idx in tqdm(range(0, len(file_list), batch_size), desc="Extracting features"):
@@ -113,8 +121,12 @@ def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=
             audio_ids = [item[0] for item in batch]
             file_paths = [item[1] for item in batch]
  
-            # Load and resample all audio in this batch
-            waveforms = [load_audio(fp)[0] for fp in file_paths]
+            # Load and resample audio (parallel or sequential)
+            if num_workers > 0:
+                with ProcessPoolExecutor(max_workers=num_workers) as pool:
+                    waveforms = list(pool.map(_load_one, file_paths))
+            else:
+                waveforms = [load_audio(fp)[0] for fp in file_paths]
  
             # Process batch through the CLAP feature extractor
             inputs = processor(
@@ -168,6 +180,8 @@ def main():
                     help="Which split to process")
     parser.add_argument("--batch_size", type=int, default=1,
                     help="Number of audio files to process at once")
+    parser.add_argument("--num_workers", type=int, default=0,
+                    help="Parallel processes for audio loading (0 = sequential)")
     args = parser.parse_args()
  
     # Set device (cuda > mps > cpu)
@@ -184,7 +198,8 @@ def main():
  
     # Extract features and save to HDF5
     output_path = os.path.join(args.output_dir, f"{args.dataset}_{args.split}.hdf5")
-    encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=args.batch_size)
+    encode_to_hdf5(file_list, model, processor, device, output_path,
+                   batch_size=args.batch_size, num_workers=args.num_workers)
  
     print("Done.")
  
