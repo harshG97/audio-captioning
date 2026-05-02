@@ -74,7 +74,8 @@ for split in train val test; do
       --audio_dir $AUDIO_DIR \
       --captions_csv data/${split}.csv \
       --output_dir $FEAT_DIR \
-      --dataset audiocaps --split $split --batch_size 32
+      --dataset audiocaps --split $split \
+      --batch_size 64 --num_workers 8
 done
 ```
 
