@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from multiprocessing import Pool
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import librosa
@@ -103,17 +103,12 @@ def main() -> None:
     processor = AutoProcessor.from_pretrained(args.clap_model)
 
     chunks: list[np.ndarray] = []
-    pending: list[np.ndarray] = []
 
-    with Pool(processes=max(1, args.num_workers)) as pool, torch.no_grad():
-        loader = pool.imap(_load_audio, paths_str, chunksize=4)
-        for wave in tqdm(loader, total=len(paths_str), desc="CLAP audio"):
-            pending.append(wave)
-            if len(pending) >= args.batch_size:
-                chunks.append(_encode_batch(model, processor, pending, device))
-                pending = []
-        if pending:
-            chunks.append(_encode_batch(model, processor, pending, device))
+    with ProcessPoolExecutor(max_workers=max(1, args.num_workers)) as pool, torch.no_grad():
+        for start in tqdm(range(0, len(paths_str), args.batch_size), desc="CLAP audio"):
+            batch_paths = paths_str[start : start + args.batch_size]
+            waves = list(pool.map(_load_audio, batch_paths))
+            chunks.append(_encode_batch(model, processor, waves, device))
 
     embeddings = np.concatenate(chunks, axis=0)
     if embeddings.shape[0] != len(df):
