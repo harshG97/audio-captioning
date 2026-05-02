@@ -83,6 +83,7 @@ class ThisGPT2Block(GPT2Block):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
+        **kwargs,                                  # absorb cache_position etc. from newer HF
     ) -> Tuple[torch.Tensor, ...]:
 
         residual = hidden_states
@@ -167,6 +168,7 @@ class ThisGPT2Model(GPT2Model):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        **kwargs,                                  # absorb cache_position etc. from newer HF
     ) -> Union[Tuple, BaseModelOutputWithPastAndCrossAttentions]:
 
         # Resolve flags
