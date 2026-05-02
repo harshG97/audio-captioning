@@ -119,6 +119,13 @@ class RECAP(PreTrainedModel):
         self.encoder.config = self.config.encoder
         self.decoder.config = self.config.decoder
 
+    def tie_weights(self):
+        # Delegate to the decoder so GPT-2's lm_head ↔ wte tie is
+        # re-established after from_pretrained loads the state dict.
+        # (RECAP sets tie_word_embeddings=False on the *parent* config,
+        # which would otherwise skip re-tying.)
+        self.decoder.tie_weights()
+
     def get_encoder(self):
         return self.encoder
 
