@@ -28,6 +28,10 @@ def build_access_id_column(df: pd.DataFrame, dataset: str) -> pd.DataFrame:
             raise ValueError(
                 f"AudioCaps CSV missing columns {required}. Found: {set(df.columns)}"
             )
+        before = len(df)
+        df = df.dropna(subset=["youtube_id", "start_time"])
+        if len(df) < before:
+            print(f"[access_id] Dropped {before - len(df)} rows with missing youtube_id/start_time")
         df["access_id"] = (
             df["youtube_id"].astype(str)
             + "_"
