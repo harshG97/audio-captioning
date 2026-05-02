@@ -20,7 +20,9 @@ Usage:
 
 import argparse
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor
+
 import h5py
 import torch
 import librosa
@@ -28,6 +30,12 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from transformers import ClapAudioModel, AutoProcessor
+
+# Make `model.device` importable when this file is invoked as a script
+# (`python data/audio_preprocess.py ...`) instead of `python -m data.audio_preprocess`.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from model.device import best_device
  
