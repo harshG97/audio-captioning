@@ -105,6 +105,11 @@ def build_file_list(audio_dir, captions_csv, dataset_type):
     return file_list
  
  
+def _load_audio_path(file_path):
+    """Module-level worker for ProcessPoolExecutor (must be picklable)."""
+    return load_audio(file_path)[0]
+
+
 def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=1, num_workers=0):
     """
     Extract features and write immediately to an HDF5 file.
@@ -116,51 +121,55 @@ def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=
     """
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     model.eval()
- 
+
     seen_ids = set()
 
-    def _load_one(fp):
-        return load_audio(fp)[0]
- 
-    with h5py.File(output_path, "w") as h5f:
-        for idx in tqdm(range(0, len(file_list), batch_size), desc="Extracting features"):
-            batch = file_list[idx:idx + batch_size]
- 
-            audio_ids = [item[0] for item in batch]
-            file_paths = [item[1] for item in batch]
- 
-            # Load and resample audio (parallel or sequential)
-            if num_workers > 0:
-                with ProcessPoolExecutor(max_workers=num_workers) as pool:
-                    waveforms = list(pool.map(_load_one, file_paths))
-            else:
-                waveforms = [load_audio(fp)[0] for fp in file_paths]
- 
-            # Process batch through the CLAP feature extractor
-            inputs = processor(
-                audios=waveforms,
-                sampling_rate=48000,
-                return_tensors="pt",
-                padding=True
-            )
-            inputs = {k: v.to(device) for k, v in inputs.items()}
- 
-            with torch.no_grad():
-                outputs = model(**inputs)
- 
-            # last_hidden_state shape: (batch, seq_len, hidden_dim)
-            # Apply flatten + permute to get shape (batch, 64, 768)
-            encodings = torch.flatten(outputs.last_hidden_state, 2)
-            encodings = encodings.permute(0, 2, 1).detach().cpu().numpy()
- 
-            # Write each encoding to HDF5, skipping duplicates
-            for audio_id, encoding in zip(audio_ids, encodings):
-                if audio_id not in seen_ids:
-                    h5f.create_dataset(str(audio_id), data=encoding)
-                    seen_ids.add(audio_id)
- 
+    # Reuse a single pool across all batches; closure-bound nested functions
+    # don't pickle, so the loader is module-level (`_load_audio_path`).
+    pool = ProcessPoolExecutor(max_workers=num_workers) if num_workers > 0 else None
+
+    try:
+        with h5py.File(output_path, "w") as h5f:
+            for idx in tqdm(range(0, len(file_list), batch_size), desc="Extracting features"):
+                batch = file_list[idx:idx + batch_size]
+
+                audio_ids = [item[0] for item in batch]
+                file_paths = [item[1] for item in batch]
+
+                # Load and resample audio (parallel or sequential)
+                if pool is not None:
+                    waveforms = list(pool.map(_load_audio_path, file_paths))
+                else:
+                    waveforms = [load_audio(fp)[0] for fp in file_paths]
+
+                # Process batch through the CLAP feature extractor
+                inputs = processor(
+                    audios=waveforms,
+                    sampling_rate=48000,
+                    return_tensors="pt",
+                    padding=True
+                )
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+
+                with torch.no_grad():
+                    outputs = model(**inputs)
+
+                # last_hidden_state shape: (batch, seq_len, hidden_dim)
+                # Apply flatten + permute to get shape (batch, 64, 768)
+                encodings = torch.flatten(outputs.last_hidden_state, 2)
+                encodings = encodings.permute(0, 2, 1).detach().cpu().numpy()
+
+                # Write each encoding to HDF5, skipping duplicates
+                for audio_id, encoding in zip(audio_ids, encodings):
+                    if audio_id not in seen_ids:
+                        h5f.create_dataset(str(audio_id), data=encoding)
+                        seen_ids.add(audio_id)
+    finally:
+        if pool is not None:
+            pool.shutdown(wait=True)
+
     print(f"Saved {len(seen_ids)} entries to {output_path}")
- 
+
     # Verify by reading back a sample entry
     with h5py.File(output_path, "r") as h5f:
         sample_id = list(h5f.keys())[0]
