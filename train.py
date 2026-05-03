@@ -84,7 +84,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--save_total_limit", type=int, default=None,
                    help="Maximum number of checkpoints to keep. Deletes older ones.")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--num_workers", type=int, default=2)
+    p.add_argument("--num_workers", type=int, default=8)
+    p.add_argument("--persistent_workers", action=argparse.BooleanOptionalAction, default=True,
+                   help="Keep dataloader workers alive across epochs to avoid "
+                        "respawn overhead. Default: enabled.")
+    p.add_argument("--prefetch_factor", type=int, default=4,
+                   help="Number of batches each worker prefetches in advance. "
+                        "Higher = more memory, less GPU starvation. Default: 4.")
     p.add_argument("--fp16", action="store_true")
     p.add_argument("--bf16", action="store_true")
     args = p.parse_args()
@@ -170,6 +176,8 @@ def main() -> None:
         save_strategy="steps",
         seed=args.seed,
         dataloader_num_workers=args.num_workers,
+        dataloader_persistent_workers=args.persistent_workers and args.num_workers > 0,
+        dataloader_prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
         fp16=args.fp16,
         bf16=args.bf16,
         remove_unused_columns=False,
