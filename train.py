@@ -32,6 +32,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--encoder_name", type=str, default="laion/clap-htsat-fused")
     p.add_argument("--decoder_name", type=str, default="gpt2")
     p.add_argument("--max_length", type=int, default=128)
+    p.add_argument(
+        "--prompt_dropout", type=float, default=0.0,
+        help="Probability of replacing the retrieved-captions prompt with the "
+             "baseline prompt during training. Forces the decoder to rely on "
+             "cross-attention to the audio rather than copying from retrieved "
+             "captions. 0.0 disables (default); 0.3-0.5 is a reasonable range.")
 
     # Cross-attention size: pick ONE of these (or neither for default reduce_factor=1).
     attn = p.add_mutually_exclusive_group()
@@ -131,6 +137,7 @@ def main() -> None:
         dataset=args.dataset,
         max_length=args.max_length,
         decoder_start_token_id=model.config.decoder_start_token_id,
+        prompt_dropout=args.prompt_dropout,
     )
     eval_ds = None
     if args.val_csv and args.val_hdf5 and args.val_retrieval_cache:

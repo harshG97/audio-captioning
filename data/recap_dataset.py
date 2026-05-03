@@ -19,6 +19,7 @@ training time.
 from __future__ import annotations
 
 import json
+import random
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +43,7 @@ class RecapDataset(Dataset):
         dataset: str = "audiocaps",
         max_length: int = 128,
         decoder_start_token_id: Optional[int] = None,
+        prompt_dropout: float = 0.0,
     ) -> None:
         df = pd.read_csv(csv_path)
         df = build_access_id_column(df, dataset)
@@ -69,6 +71,9 @@ class RecapDataset(Dataset):
             else (tokenizer.bos_token_id if tokenizer.bos_token_id is not None else tokenizer.eos_token_id)
         )
         self.eos_id = tokenizer.eos_token_id
+        if not 0.0 <= prompt_dropout <= 1.0:
+            raise ValueError("prompt_dropout must be in [0, 1]")
+        self.prompt_dropout = prompt_dropout
         self._h5: Optional[h5py.File] = None
 
     def _h5_handle(self) -> h5py.File:
@@ -84,6 +89,10 @@ class RecapDataset(Dataset):
         access_id = str(row["access_id"])
         gt_caption = str(row["caption"])
         retrieved = self.cache[access_id]
+        if self.prompt_dropout > 0.0 and random.random() < self.prompt_dropout:
+            # Forces the decoder to rely on cross-attention rather than the
+            # retrieved-caption text, by collapsing the prompt to BASELINE_PROMPT.
+            retrieved = []
 
         prompt = build_prompt(retrieved)
         prompt_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
