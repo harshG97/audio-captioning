@@ -14,9 +14,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import sys
 from collections import Counter
 from pathlib import Path
+
+# Make repo modules importable when invoked as `python scripts/check_retrieval_leakage.py`.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import pandas as pd
 
