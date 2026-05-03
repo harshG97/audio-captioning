@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 import torch
 from tqdm import tqdm
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, LogitsProcessor, LogitsProcessorList
 from transformers.modeling_outputs import BaseModelOutput
 
 from data.access_id import DATASETS, build_access_id_column
@@ -59,30 +59,32 @@ def _build_prompt_ids(tokenizer, prompt: str, max_prompt_length: int) -> List[in
     return ids
 
 
-def _ban_repeated_ngrams(
-    logits: torch.Tensor,            # (vocab,)
-    sequence: torch.Tensor,          # (1, L) -- single hypothesis
-    n: int,
-    suffix_start: int,               # only block n-grams generated AFTER this index
-) -> torch.Tensor:
-    """In-place return of logits with banned next-token ids set to -inf so that
-    no n-gram of size `n` from the *generated suffix* repeats. n <= 0 is a no-op."""
-    if n <= 0:
-        return logits
-    seq = sequence[0].tolist()[suffix_start:]
-    if len(seq) < n - 1:
-        return logits
-    prefix = tuple(seq[-(n - 1):]) if n > 1 else tuple()
-    banned: set[int] = set()
-    for i in range(len(seq) - n + 1):
-        if tuple(seq[i:i + n - 1]) == prefix:
-            banned.add(seq[i + n - 1])
-    if not banned:
-        return logits
-    logits = logits.clone()
-    for tok in banned:
-        logits[tok] = float("-inf")
-    return logits
+class SuffixNoRepeatNGramLogitsProcessor(LogitsProcessor):
+    """Block n-gram repeats within the *generated suffix only* (ignoring the
+    prompt prefix), matching the original evaluate.py semantics. HF's built-in
+    NoRepeatNGramLogitsProcessor blocks across the entire input including the
+    prompt, which would forbid the model from echoing useful phrases from the
+    retrieved context."""
+
+    def __init__(self, ngram_size: int, suffix_start: int):
+        self.n = ngram_size
+        self.suffix_start = suffix_start
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        if self.n <= 0:
+            return scores
+        for i in range(input_ids.shape[0]):
+            seq = input_ids[i, self.suffix_start:].tolist()
+            if len(seq) < self.n - 1:
+                continue
+            prefix = tuple(seq[-(self.n - 1):]) if self.n > 1 else ()
+            banned: set[int] = set()
+            for j in range(len(seq) - self.n + 1):
+                if tuple(seq[j:j + self.n - 1]) == prefix:
+                    banned.add(seq[j + self.n - 1])
+            if banned:
+                scores[i, list(banned)] = float("-inf")
+        return scores
 
 
 @torch.no_grad()
@@ -100,68 +102,31 @@ def generate_caption(
     no_repeat_ngram_size: int = 0,
 ) -> str:
     encoder_outputs = BaseModelOutput(last_hidden_state=encoder_hidden.to(device))
-    initial = torch.tensor([[decoder_start_id, *prompt_ids]], dtype=torch.long, device=device)
-    suffix_start = 1 + len(prompt_ids)            # generated tokens begin here
+    decoder_input_ids = torch.tensor(
+        [[decoder_start_id, *prompt_ids]], dtype=torch.long, device=device
+    )
+    suffix_start = decoder_input_ids.shape[1]
 
-    if num_beams <= 1:
-        cur = initial
-        for _ in range(max_new_tokens):
-            out = model(
-                encoder_outputs=encoder_outputs,
-                decoder_input_ids=cur,
-                return_dict=True,
-            )
-            logits = out.logits[0, -1]
-            logits = _ban_repeated_ngrams(logits, cur, no_repeat_ngram_size, suffix_start)
-            next_id = int(logits.argmax().item())
-            cur = torch.cat([cur, torch.tensor([[next_id]], device=device)], dim=1)
-            if next_id == eos_id:
-                break
-        gen_ids = cur[0, suffix_start:].tolist()
-        if gen_ids and gen_ids[-1] == eos_id:
-            gen_ids = gen_ids[:-1]
-        return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+    logits_processor = LogitsProcessorList()
+    if no_repeat_ngram_size > 0:
+        logits_processor.append(
+            SuffixNoRepeatNGramLogitsProcessor(no_repeat_ngram_size, suffix_start)
+        )
 
-    # Beam search with length-normalized log-probs: score / n**length_penalty.
-    beams = [(0.0, initial.clone(), False)]            # (score, sequence, is_done)
-    for _ in range(max_new_tokens):
-        if all(done for _, _, done in beams):
-            break
-        candidates: list[tuple[float, torch.Tensor, bool]] = []
-        for score, seq, done in beams:
-            if done:
-                candidates.append((score, seq, True))
-                continue
-            out = model(
-                encoder_outputs=encoder_outputs,
-                decoder_input_ids=seq,
-                return_dict=True,
-            )
-            logits = out.logits[0, -1]
-            logits = _ban_repeated_ngrams(logits, seq, no_repeat_ngram_size, suffix_start)
-            log_probs = torch.log_softmax(logits, dim=-1)
-            top_lp, top_idx = log_probs.topk(num_beams)
-            for lp, tok in zip(top_lp.tolist(), top_idx.tolist()):
-                new_seq = torch.cat([seq, torch.tensor([[tok]], device=device)], dim=1)
-                new_done = tok == eos_id
-                candidates.append((score + lp, new_seq, new_done))
+    out = model.generate(
+        encoder_outputs=encoder_outputs,
+        decoder_input_ids=decoder_input_ids,
+        max_new_tokens=max_new_tokens,
+        num_beams=num_beams,
+        length_penalty=length_penalty,
+        early_stopping=(num_beams > 1),
+        eos_token_id=eos_id,
+        pad_token_id=tokenizer.pad_token_id,
+        logits_processor=logits_processor,
+        use_cache=True,
+    )
 
-        def length_norm(item: tuple[float, torch.Tensor, bool]) -> float:
-            s, sq, _ = item
-            n = max(1, sq.shape[1] - suffix_start)
-            return s / (n ** length_penalty)
-
-        candidates.sort(key=length_norm, reverse=True)
-        beams = candidates[:num_beams]
-
-    def final_score(item: tuple[float, torch.Tensor, bool]) -> float:
-        s, sq, _ = item
-        n = max(1, sq.shape[1] - suffix_start)
-        return s / (n ** length_penalty)
-
-    best = max(beams, key=final_score)
-    seq = best[1]
-    gen_ids = seq[0, suffix_start:].tolist()
+    gen_ids = out[0, suffix_start:].tolist()
     if gen_ids and gen_ids[-1] == eos_id:
         gen_ids = gen_ids[:-1]
     return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
