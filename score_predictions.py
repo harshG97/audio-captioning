@@ -50,6 +50,8 @@ def main() -> None:
                         help="Path to predictions JSON from evaluate.py")
     parser.add_argument("--output", type=str, default=None,
                         help="Optional path to write a metrics JSON.")
+    parser.add_argument("--skip_java", action="store_true",
+                        help="Skip METEOR and SPICE (Java-based) to prevent hangs/errors.")
     args = parser.parse_args()
 
     preds = json.loads(Path(args.predictions).read_text())
@@ -99,7 +101,11 @@ def main() -> None:
     except Exception:
         pass
     else:
-        m, ok = _safe_score("METEOR", Meteor, gts, res, java_required=True)
+        if args.skip_java:
+            print("[INFO] METEOR: skipped via --skip_java.")
+            ok = False
+        else:
+            m, ok = _safe_score("METEOR", Meteor, gts, res, java_required=True)
         if ok:
             metrics["METEOR"] = float(m)
 
@@ -110,7 +116,11 @@ def main() -> None:
     except Exception:
         pass
     else:
-        s, ok = _safe_score("SPICE", Spice, gts, res, java_required=True)
+        if args.skip_java:
+            print("[INFO] SPICE: skipped via --skip_java.")
+            ok = False
+        else:
+            s, ok = _safe_score("SPICE", Spice, gts, res, java_required=True)
         if ok:
             spice_score = float(s)
             metrics["SPICE"] = spice_score
