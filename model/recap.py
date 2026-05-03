@@ -26,8 +26,13 @@ from transformers.models.vision_encoder_decoder.configuration_vision_encoder_dec
     VisionEncoderDecoderConfig,
 )
 from transformers.utils import logging
+from transformers import AutoConfig, AutoModelForCausalLM
 
 from model.gpt2_xattn import ThisGPT2Config, ThisGPT2LMHeadModel
+
+# Register custom model types with Hugging Face registries
+AutoConfig.register("this_gpt2", ThisGPT2Config)
+AutoModelForCausalLM.register(ThisGPT2Config, ThisGPT2LMHeadModel)
 
 logger = logging.get_logger(__name__)
 
