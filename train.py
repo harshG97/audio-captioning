@@ -75,6 +75,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--logging_steps", type=int, default=50)
     p.add_argument("--save_steps", type=int, default=2000)
     p.add_argument("--eval_steps", type=int, default=2000)
+    p.add_argument("--save_total_limit", type=int, default=None,
+                   help="Maximum number of checkpoints to keep. Deletes older ones.")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--num_workers", type=int, default=2)
     p.add_argument("--fp16", action="store_true")
@@ -155,6 +157,7 @@ def main() -> None:
         warmup_ratio=args.warmup_ratio,
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
+        save_total_limit=args.save_total_limit,
         eval_steps=args.eval_steps if eval_ds is not None else None,
         evaluation_strategy="steps" if eval_ds is not None else "no",
         save_strategy="steps",
