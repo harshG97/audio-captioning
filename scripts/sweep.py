@@ -147,6 +147,7 @@ def stage_train(
     val_csv: Optional[str], val_hdf5: Optional[str],
     retrieval_cache_dir: Path, dataset: str,
     no_best_model: bool,
+    eval_steps: Optional[int], save_steps: Optional[int],
     skip_existing: bool, dry_run: bool,
 ) -> None:
     if skip_existing and (run_dir / "config.json").exists():
@@ -173,6 +174,10 @@ def stage_train(
         ]
         if not no_best_model:
             cmd.append("--load_best_model_at_end")
+    if eval_steps is not None:
+        cmd += ["--eval_steps", str(eval_steps)]
+    if save_steps is not None:
+        cmd += ["--save_steps", str(save_steps)]
     if k == 0:
         cmd.append("--no-rag")
     else:
@@ -255,6 +260,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight_decays", type=float, nargs="+", default=[0.0])
     p.add_argument("--epochs", type=float, nargs="+", default=[10.0])
     p.add_argument("--lrs", type=float, nargs="+", default=[5e-5])
+
+    # Train passthroughs (not swept; not in run name; train.py defaults if omitted)
+    p.add_argument("--eval_steps", type=int, default=None)
+    p.add_argument("--save_steps", type=int, default=None)
 
     # Eval sweep
     p.add_argument("--num_beams", type=int, nargs="+", default=[1])
@@ -345,6 +354,7 @@ def main() -> None:
                 val_csv=args.val_csv, val_hdf5=args.val_hdf5,
                 retrieval_cache_dir=rcache_dir, dataset=args.dataset,
                 no_best_model=args.no_best_model,
+                eval_steps=args.eval_steps, save_steps=args.save_steps,
                 skip_existing=args.skip_existing, dry_run=args.dry_run,
             )
 
