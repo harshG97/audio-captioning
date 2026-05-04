@@ -26,7 +26,9 @@ fresh CUDA process.
 from __future__ import annotations
 
 import argparse
+import csv
 import itertools
+import json
 import subprocess
 import sys
 import time
@@ -65,6 +67,64 @@ def metrics_name(skip_java: bool) -> str:
 
 def cache_path(retrieval_cache_dir: Path, k: int, split: str) -> Path:
     return retrieval_cache_dir / f"retrieved_top{k}_{split}.json"
+
+
+# ---------- rolling summary CSV -------------------------------------------
+
+SUMMARY_COLUMNS = [
+    "run_name", "k", "prompt_dropout", "weight_decay", "epochs", "lr",
+    "num_beams", "no_repeat_ngram_size", "length_penalty",
+    "score_mode",
+    "BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4",
+    "ROUGE-L", "CIDEr", "METEOR", "SPICE", "SPIDEr",
+    "predictions_path", "metrics_path",
+]
+KEY_COLUMNS = (
+    "run_name", "num_beams", "no_repeat_ngram_size", "length_penalty",
+    "score_mode",
+)
+
+
+def _row_key(row: dict) -> tuple:
+    return tuple(str(row.get(c, "")) for c in KEY_COLUMNS)
+
+
+def upsert_summary(csv_path: Path, row: dict) -> None:
+    """Replace any existing row with the same key, then append, then rewrite.
+    Cheap and robust for sweep sizes; the file is small."""
+    existing = []
+    if csv_path.exists():
+        with csv_path.open(newline="") as f:
+            existing = [r for r in csv.DictReader(f) if _row_key(r) != _row_key(row)]
+    existing.append(row)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=SUMMARY_COLUMNS, extrasaction="ignore")
+        w.writeheader()
+        for r in existing:
+            w.writerow(r)
+
+
+def _summary_row(
+    *, run_name_str: str, k: int, pd: float, wd: float, ep: float, lr: float,
+    nb: int, nrn: int, lp: float, score_mode: str,
+    metrics_path: Path, predictions_path: Path,
+) -> dict:
+    metrics = json.loads(metrics_path.read_text())
+    row = {
+        "run_name": run_name_str,
+        "k": _fmt(k), "prompt_dropout": _fmt(pd), "weight_decay": _fmt(wd),
+        "epochs": _fmt(ep), "lr": _fmt(lr),
+        "num_beams": _fmt(nb), "no_repeat_ngram_size": _fmt(nrn),
+        "length_penalty": _fmt(lp),
+        "score_mode": score_mode,
+        "predictions_path": str(predictions_path),
+        "metrics_path": str(metrics_path),
+    }
+    for m in ("BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4",
+              "ROUGE-L", "CIDEr", "METEOR", "SPICE", "SPIDEr"):
+        row[m] = metrics.get(m, "")
+    return row
 
 
 # ---------- subprocess helpers --------------------------------------------
@@ -151,11 +211,11 @@ def stage_eval(
 def stage_score(
     *, run_dir: Path, pred_path: Path, skip_java: bool,
     skip_existing: bool, dry_run: bool,
-) -> None:
+) -> Path:
     out_path = run_dir / "metrics" / metrics_name(skip_java)
     if skip_existing and out_path.exists():
         print(f"[skip score] {run_dir.name}/{out_path.name} (exists)")
-        return
+        return out_path
 
     cmd = [
         sys.executable, "score_predictions.py",
@@ -165,6 +225,7 @@ def stage_score(
     if skip_java:
         cmd.append("--skip_java")
     _run(cmd, dry_run)
+    return out_path
 
 
 # ---------- CLI -----------------------------------------------------------
@@ -269,10 +330,13 @@ def main() -> None:
         f"configs × {len(score_modes)} score modes"
     )
 
+    summary_csv = runs_dir / "summary.csv"
+
     for k, pd, wd, ep, lr in train_combos:
-        rd = runs_dir / run_name(k, pd, wd, ep, lr)
+        rname = run_name(k, pd, wd, ep, lr)
+        rd = runs_dir / rname
         rd.mkdir(parents=True, exist_ok=True)
-        print(f"\n========== {rd.name} ==========")
+        print(f"\n========== {rname} ==========")
 
         if "train" in args.stages:
             stage_train(
@@ -303,10 +367,21 @@ def main() -> None:
                           "(run eval stage first)")
                     continue
                 for skip_java in score_modes:
-                    stage_score(
+                    metrics_path = stage_score(
                         run_dir=rd, pred_path=pred_path, skip_java=skip_java,
                         skip_existing=args.skip_existing, dry_run=args.dry_run,
                     )
+                    if args.dry_run or not metrics_path.exists():
+                        continue
+                    row = _summary_row(
+                        run_name_str=rname, k=k, pd=pd, wd=wd, ep=ep, lr=lr,
+                        nb=nb, nrn=nrn, lp=lp,
+                        score_mode="skip_java" if skip_java else "with_java",
+                        metrics_path=metrics_path,
+                        predictions_path=pred_path,
+                    )
+                    upsert_summary(summary_csv, row)
+                    print(f"[summary] updated {summary_csv}")
 
 
 if __name__ == "__main__":
