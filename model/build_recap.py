@@ -2,10 +2,13 @@
 build_recap.py — Factory for a RECAP model + GPT-2 tokenizer with the
 special-token IDs wired up correctly for cross-attention seq2seq training.
 
-GPT-2 has no native pad token; we reuse `<|endoftext|>` for pad/bos/eos.
-The decoder_start_token_id and pad_token_id are written onto both the
-parent RECAPConfig (used by RECAP.forward / shift_tokens_right) and the
-decoder config (used by GPT-2's generation utilities).
+GPT-2 has no native pad token. We add a distinct `<|pad|>` token (not
+aliased to `<|endoftext|>`) so the decoder learns EOS as a true stop
+signal rather than as a filler token, and resize the decoder embeddings
+accordingly. The decoder_start_token_id and pad_token_id are written
+onto both the parent RECAPConfig (used by RECAP.forward /
+shift_tokens_right) and the decoder config (used by GPT-2's generation
+utilities).
 
 Default trainable scope: cross-attention sublayers + ln_cross_attn only
 (the rest of the GPT-2 decoder is frozen). Pass train_decoder=True to
@@ -71,14 +74,18 @@ def build_recap(
     _register_auto_classes_once()
 
     tokenizer = AutoTokenizer.from_pretrained(decoder_name)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # Use a distinct pad token (not aliased to EOS) so the decoder learns a
+    # genuine stop signal: with pad == eos, padded positions hold EOS-shaped
+    # embeddings and the model tends to treat EOS as filler rather than stop.
+    if tokenizer.pad_token is None or tokenizer.pad_token_id == tokenizer.eos_token_id:
+        tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
 
     model = RECAP.from_encoder_decoder_pretrained(
         encoder_pretrained_model_name_or_path=encoder_name,
         decoder_pretrained_model_name_or_path=decoder_name,
         cross_attention_reduce_factor=cross_attention_reduce_factor,
     )
+    model.decoder.resize_token_embeddings(len(tokenizer))
 
     bos_id = tokenizer.bos_token_id if tokenizer.bos_token_id is not None else tokenizer.eos_token_id
 
@@ -86,10 +93,12 @@ def build_recap(
     model.config.decoder_start_token_id = bos_id
     model.config.eos_token_id = tokenizer.eos_token_id
     model.config.bos_token_id = bos_id
+    model.config.vocab_size = len(tokenizer)
 
     model.decoder.config.pad_token_id = tokenizer.pad_token_id
     model.decoder.config.bos_token_id = bos_id
     model.decoder.config.eos_token_id = tokenizer.eos_token_id
+    model.decoder.config.vocab_size = len(tokenizer)
 
     if freeze_encoder:
         for p in model.encoder.parameters():
