@@ -86,6 +86,7 @@ def stage_train(
     train_csv: str, train_hdf5: str,
     val_csv: Optional[str], val_hdf5: Optional[str],
     retrieval_cache_dir: Path, dataset: str,
+    no_best_model: bool,
     skip_existing: bool, dry_run: bool,
 ) -> None:
     if skip_existing and (run_dir / "config.json").exists():
@@ -109,8 +110,9 @@ def stage_train(
             "--val_csv", val_csv,
             "--val_hdf5", val_hdf5,
             "--val_retrieval_cache", str(cache_path(retrieval_cache_dir, k, "val")),
-            "--load_best_model_at_end",
         ]
+        if not no_best_model:
+            cmd.append("--load_best_model_at_end")
     if k == 0:
         cmd.append("--no-rag")
     else:
@@ -210,6 +212,12 @@ def parse_args() -> argparse.Namespace:
                    choices=["train", "eval", "score"])
     p.add_argument("--skip_existing", action="store_true",
                    help="Skip a stage when its output already exists.")
+    p.add_argument("--no_best_model", action="store_true",
+                   help="When a val set is provided, do NOT pass "
+                        "--load_best_model_at_end to train.py. Periodic eval "
+                        "still runs and is logged, but the saved model is the "
+                        "final training-step weights instead of the lowest-"
+                        "eval_loss checkpoint.")
     p.add_argument("--dry_run", action="store_true",
                    help="Print commands without executing.")
 
@@ -272,6 +280,7 @@ def main() -> None:
                 train_csv=args.train_csv, train_hdf5=args.train_hdf5,
                 val_csv=args.val_csv, val_hdf5=args.val_hdf5,
                 retrieval_cache_dir=rcache_dir, dataset=args.dataset,
+                no_best_model=args.no_best_model,
                 skip_existing=args.skip_existing, dry_run=args.dry_run,
             )
 
