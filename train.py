@@ -93,6 +93,11 @@ def parse_args() -> argparse.Namespace:
                         "Higher = more memory, less GPU starvation. Default: 4.")
     p.add_argument("--fp16", action="store_true")
     p.add_argument("--bf16", action="store_true")
+    p.add_argument(
+        "--load_best_model_at_end", action="store_true",
+        help="At end of training, reload the checkpoint with the lowest "
+             "eval_loss instead of keeping the last training step. Requires "
+             "a validation set (--val_csv/--val_hdf5/--val_retrieval_cache).")
     args = p.parse_args()
 
     # Resolve attention-size flags.
@@ -159,6 +164,12 @@ def main() -> None:
 
     collator = RecapCollator(pad_token_id=tokenizer.pad_token_id)
 
+    if args.load_best_model_at_end and eval_ds is None:
+        raise SystemExit(
+            "--load_best_model_at_end requires --val_csv, --val_hdf5, and "
+            "--val_retrieval_cache so eval can run during training."
+        )
+
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -174,6 +185,9 @@ def main() -> None:
         eval_steps=args.eval_steps if eval_ds is not None else None,
         evaluation_strategy="steps" if eval_ds is not None else "no",
         save_strategy="steps",
+        load_best_model_at_end=args.load_best_model_at_end,
+        metric_for_best_model="eval_loss" if args.load_best_model_at_end else None,
+        greater_is_better=False if args.load_best_model_at_end else None,
         seed=args.seed,
         dataloader_num_workers=args.num_workers,
         dataloader_persistent_workers=args.persistent_workers and args.num_workers > 0,
