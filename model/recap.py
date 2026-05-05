@@ -368,17 +368,44 @@ class RECAP(PreTrainedModel):
             labels, self.config.pad_token_id, self.config.decoder_start_token_id
         )
 
+    # def prepare_inputs_for_generation(
+    #     self,
+    #     input_ids,
+    #     past=None,
+    #     attention_mask=None,
+    #     use_cache=None,
+    #     encoder_outputs=None,
+    #     **kwargs,
+    # ):
+    #     decoder_inputs = self.decoder.prepare_inputs_for_generation(input_ids, past=past)
+    #     decoder_attention_mask = decoder_inputs.get("attention_mask")
+    #     return {
+    #         "attention_mask": attention_mask,
+    #         "decoder_attention_mask": decoder_attention_mask,
+    #         "decoder_input_ids": decoder_inputs["input_ids"],
+    #         "encoder_outputs": encoder_outputs,
+    #         "past_key_values": decoder_inputs["past_key_values"],
+    #         "use_cache": use_cache,
+    #     }
+
     def prepare_inputs_for_generation(
         self,
         input_ids,
-        past=None,
+        past_key_values=None,
         attention_mask=None,
         use_cache=None,
         encoder_outputs=None,
         **kwargs,
     ):
-        decoder_inputs = self.decoder.prepare_inputs_for_generation(input_ids, past=past)
+        # Fallback for older HF calling conventions
+        if past_key_values is None:
+            past_key_values = kwargs.get("past", None)
+
+        decoder_inputs = self.decoder.prepare_inputs_for_generation(
+            input_ids, past_key_values=past_key_values, **kwargs
+        )
         decoder_attention_mask = decoder_inputs.get("attention_mask")
+        
         return {
             "attention_mask": attention_mask,
             "decoder_attention_mask": decoder_attention_mask,

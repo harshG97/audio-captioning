@@ -86,6 +86,23 @@ class SuffixNoRepeatNGramLogitsProcessor(LogitsProcessor):
                 scores[i, list(banned)] = float("-inf")
         return scores
 
+def clean_prediction(text, stop_strings):
+    """
+    Truncates the string at the first occurrence of any stop string 
+    and removes the prompt-based repetitions.
+    """
+    # 1. Find the earliest occurrence of any stop string
+    earliest_stop = len(text)
+    for stop_str in stop_strings:
+        idx = text.find(stop_str)
+        if idx != -1 and idx < earliest_stop:
+            earliest_stop = idx
+    
+    # 2. Slice the text at that point
+    text = text[:earliest_stop]
+    
+    # 3. Clean up whitespace
+    return text.strip()
 
 @torch.no_grad()
 def generate_caption(
@@ -112,7 +129,7 @@ def generate_caption(
         logits_processor.append(
             SuffixNoRepeatNGramLogitsProcessor(no_repeat_ngram_size, suffix_start)
         )
-
+    stop_strings = ["|", "\n", "\\n"] # Heuristic stop tokens indicating model is trying to "talk to itself" rather than output a caption
     out = model.generate(
         encoder_outputs=encoder_outputs,
         decoder_input_ids=decoder_input_ids,
@@ -124,6 +141,8 @@ def generate_caption(
         pad_token_id=tokenizer.pad_token_id,
         logits_processor=logits_processor,
         use_cache=True,
+        stop_strings=stop_strings,
+        tokenizer=tokenizer,
     )
 
     gen_ids = out[0, suffix_start:].tolist()
@@ -174,7 +193,7 @@ def main() -> None:
             feats = np.asarray(h5f[access_id][()], dtype=np.float32)
             encoder_hidden = torch.from_numpy(feats).unsqueeze(0)
 
-            pred = generate_caption(
+            pred_raw = generate_caption(
                 model=model,
                 tokenizer=tokenizer,
                 encoder_hidden=encoder_hidden,
@@ -187,10 +206,15 @@ def main() -> None:
                 length_penalty=args.length_penalty,
                 no_repeat_ngram_size=args.no_repeat_ngram_size,
             )
+            pred_raw = pred_raw.strip()
+            pred_raw = pred_raw.lower() 
+            
+            # Clean the string using the same list you passed to generate
+            processed_pred = clean_prediction(pred_raw, ["|", "\n", "\\n", "target", "similar audio", "similar audios", ".", "description:"])
 
             predictions[access_id] = {
                 "references": references_by_id[access_id],
-                "prediction": pred,
+                "prediction": processed_pred,
             }
 
     out = Path(args.output_path)

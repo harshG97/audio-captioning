@@ -61,8 +61,12 @@ def pred_name(nb: int, nrn: int, lp: float) -> str:
     return f"test_preds_nb{_fmt(nb)}_nrngram{_fmt(nrn)}_lp{_fmt(lp)}.json"
 
 
-def metrics_name(skip_java: bool) -> str:
-    return "metrics_skip_java.json" if skip_java else "metrics_with_java.json"
+# def metrics_name(skip_java: bool) -> str:
+#     return "metrics_skip_java.json" if skip_java else "metrics_with_java.json"
+
+def metrics_name(skip_java: bool, nb: int, nrn: int, lp: float) -> str:
+    base = "skip_java" if skip_java else "with_java"
+    return f"metrics_{base}_nb{_fmt(nb)}_nrngram{_fmt(nrn)}_lp{_fmt(lp)}.json"
 
 
 def cache_path(retrieval_cache_dir: Path, k: int, split: str) -> Path:
@@ -148,6 +152,8 @@ def stage_train(
     retrieval_cache_dir: Path, dataset: str,
     no_best_model: bool,
     eval_steps: Optional[int], save_steps: Optional[int],
+    save_total_limit: Optional[int],
+    per_device_train_batch_size: int, bf16: bool,
     skip_existing: bool, dry_run: bool,
 ) -> None:
     if skip_existing and (run_dir / "config.json").exists():
@@ -178,6 +184,12 @@ def stage_train(
         cmd += ["--eval_steps", str(eval_steps)]
     if save_steps is not None:
         cmd += ["--save_steps", str(save_steps)]
+    if per_device_train_batch_size is not None:
+        cmd += ["--per_device_train_batch_size", str(per_device_train_batch_size)]
+    if bf16:
+        cmd.append("--bf16")
+    if save_total_limit is not None:
+        cmd += ["--save_total_limit", str(save_total_limit)]
     if k == 0:
         cmd.append("--no-rag")
     else:
@@ -213,11 +225,17 @@ def stage_eval(
     return out_path
 
 
+# def stage_score(
+#     *, run_dir: Path, pred_path: Path, skip_java: bool,
+#     skip_existing: bool, dry_run: bool,
+# ) -> Path:
+#     out_path = run_dir / "metrics" / metrics_name(skip_java)
 def stage_score(
     *, run_dir: Path, pred_path: Path, skip_java: bool,
+    nb: int, nrn: int, lp: float,  # Add these arguments
     skip_existing: bool, dry_run: bool,
 ) -> Path:
-    out_path = run_dir / "metrics" / metrics_name(skip_java)
+    out_path = run_dir / "metrics" / metrics_name(skip_java, nb, nrn, lp)
     if skip_existing and out_path.exists():
         print(f"[skip score] {run_dir.name}/{out_path.name} (exists)")
         return out_path
@@ -264,6 +282,10 @@ def parse_args() -> argparse.Namespace:
     # Train passthroughs (not swept; not in run name; train.py defaults if omitted)
     p.add_argument("--eval_steps", type=int, default=None)
     p.add_argument("--save_steps", type=int, default=None)
+    p.add_argument("--per_device_train_batch_size", type=int, default=16)
+    p.add_argument("--bf16", action="store_true")
+    p.add_argument("--save_total_limit", type=int, default=None,
+                   help="Maximum number of checkpoints to keep. Deletes older ones.")
 
     # Eval sweep
     p.add_argument("--num_beams", type=int, nargs="+", default=[1])
@@ -355,6 +377,8 @@ def main() -> None:
                 retrieval_cache_dir=rcache_dir, dataset=args.dataset,
                 no_best_model=args.no_best_model,
                 eval_steps=args.eval_steps, save_steps=args.save_steps,
+                per_device_train_batch_size=args.per_device_train_batch_size, bf16=args.bf16,
+                save_total_limit=args.save_total_limit,
                 skip_existing=args.skip_existing, dry_run=args.dry_run,
             )
 
@@ -377,8 +401,13 @@ def main() -> None:
                           "(run eval stage first)")
                     continue
                 for skip_java in score_modes:
+                    # metrics_path = stage_score(
+                    #     run_dir=rd, pred_path=pred_path, skip_java=skip_java,
+                    #     skip_existing=args.skip_existing, dry_run=args.dry_run,
+                    # )
                     metrics_path = stage_score(
                         run_dir=rd, pred_path=pred_path, skip_java=skip_java,
+                        nb=nb, nrn=nrn, lp=lp,  # Pass the arguments here
                         skip_existing=args.skip_existing, dry_run=args.dry_run,
                     )
                     if args.dry_run or not metrics_path.exists():

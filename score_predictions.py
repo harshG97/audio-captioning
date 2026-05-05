@@ -110,26 +110,26 @@ def main() -> None:
             metrics["METEOR"] = float(m)
 
     # SPICE (Java)
-    spice_score: Optional[float] = None
-    try:
-        from pycocoevalcap.spice.spice import Spice
-    except Exception:
-        pass
-    else:
-        if args.skip_java:
-            print("[INFO] SPICE: skipped via --skip_java.")
-            ok = False
-        else:
-            s, ok = _safe_score("SPICE", Spice, gts, res, java_required=True)
-        if ok:
-            spice_score = float(s)
-            metrics["SPICE"] = spice_score
+    # spice_score: Optional[float] = None
+    # try:
+    #     from pycocoevalcap.spice.spice import Spice
+    # except Exception:
+    #     pass
+    # else:
+    #     if args.skip_java:
+    #         print("[INFO] SPICE: skipped via --skip_java.")
+    #         ok = False
+    #     else:
+    #         s, ok = _safe_score("SPICE", Spice, gts, res, java_required=True)
+    #     if ok:
+    #         spice_score = float(s)
+    #         metrics["SPICE"] = spice_score
 
-    # SPIDEr = (SPICE + CIDEr) / 2 — only when both are available.
-    if spice_score is not None and cider_score is not None:
-        metrics["SPIDEr"] = (spice_score + cider_score) / 2.0
-    else:
-        print("[WARN] SPIDEr: skipped (requires both SPICE and CIDEr).")
+    # # SPIDEr = (SPICE + CIDEr) / 2 — only when both are available.
+    # if spice_score is not None and cider_score is not None:
+    #     metrics["SPIDEr"] = (spice_score + cider_score) / 2.0
+    # else:
+    #     print("[WARN] SPIDEr: skipped (requires both SPICE and CIDEr).")
 
     print("\n=== Metrics ===")
     for name, val in metrics.items():
