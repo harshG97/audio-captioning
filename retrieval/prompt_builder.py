@@ -9,9 +9,13 @@ Follows the exact template from the RECAP paper:
 """
 
 
+# PROMPT_TEMPLATE = (
+#     "Audios similar to this audio sounds like: {retrieved}. "
+#     "This audio sounds like:"
+# )
 PROMPT_TEMPLATE = (
-    "Audios similar to this audio sounds like: {retrieved}. "
-    "This audio sounds like:"
+    "Similar audio descriptions: {retrieved}\n"
+    "Target audio description:"
 )
 BASELINE_PROMPT = "This audio sounds like:"
 
@@ -30,7 +34,7 @@ def build_prompt(retrieved_captions: list[str]) -> str:
     """
     if not retrieved_captions:
         return BASELINE_PROMPT
-    joined = ", ".join(retrieved_captions)
+    joined = " | ".join(retrieved_captions)
     return PROMPT_TEMPLATE.format(retrieved=joined)
 
 
