@@ -215,21 +215,23 @@ drifting away from grammatical English. Weight decay is bumped to $0.01$ to
 counter overfitting now that the parameter count grew $\sim 18\times$.
 
 \subsection{Code, what we built, and what we changed}
-We started from the public RECAP reference
+The full pipeline is implemented in \textbf{PyTorch}, building on
+the \textsc{Hugging~Face} \texttt{transformers}~\cite{wolf2020transformers}
+interfaces for both backbones. We started from the public RECAP reference
 implementation\footnote{\url{https://github.com/Sreyan88/RECAP}} for the
-high-level architecture skeleton and reused the \textsc{Hugging~Face}
-\texttt{transformers}~\cite{wolf2020transformers} interfaces for both
-backbones. The pieces we authored from scratch include: (i) the entire data
-and feature-cache pipeline (\texttt{data/audio\_preprocess.py},
-\texttt{data/recap\_dataset.py}); (ii) the retrieval datastore builder
-with the top-$k$ CLAP-cosine strategy and an explicit train/eval leakage
-guard (\texttt{retrieval/}); (iii) a custom GPT-2 cross-attention block that
-correctly accepts the CLAP $768$-d hidden size (\texttt{model/gpt2\_xattn.py},
-\texttt{model/cross\_attention.py}); (iv) the
-\texttt{train.py}/\texttt{finetune.py} pair, including the dual-LR optimizer
-that the stock \textsc{HF} \texttt{Trainer} does not provide; (v) the sweep
-harness (\texttt{scripts/sweep.py}, $\approx 96$ runs) and the metrics-scoring
-wrapper.
+high-level architecture skeleton, but rewrote it end-to-end. The pieces we
+authored from scratch include: (i) the entire data and feature-cache pipeline
+(\texttt{data/audio\_preprocess.py}, \texttt{data/recap\_dataset.py});
+(ii) the retrieval datastore builder with the top-$k$ CLAP-cosine strategy
+and an explicit train/eval leakage guard (\texttt{retrieval/}); (iii) a
+custom GPT-2 cross-attention block that correctly accepts the CLAP $768$-d
+hidden size (\texttt{model/gpt2\_xattn.py}, \texttt{model/cross\_attention.py});
+(iv) the \texttt{train.py}/\texttt{finetune.py} pair, including the dual-LR
+optimizer that the stock \textsc{HF} \texttt{Trainer} does not provide;
+(v) the sweep harness (\texttt{scripts/sweep.py}; we trained 12 stage-1
+checkpoints and evaluated each at 8 generation settings, for a total of 96
+evaluated configurations) and the metric-scoring wrapper
+(\texttt{score\_predictions.py}).
 
 \subsection{What we anticipated, what bit us}
 \textbf{Anticipated.} (a) GPT-2 would copy from retrieved captions instead of
@@ -518,6 +520,7 @@ re-ranking}: top-$k$ over CLAP cosine treats every retrieved caption equally;
 a learned re-ranker that conditions on both the audio and the candidate
 caption (e.g.\ a small bi-encoder) might recover the events that CLAP misses.
 
+\newpage
 \section{Work Division}
 
 \begin{table*}[t]
