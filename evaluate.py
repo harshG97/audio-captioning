@@ -129,7 +129,7 @@ def generate_caption(
         logits_processor.append(
             SuffixNoRepeatNGramLogitsProcessor(no_repeat_ngram_size, suffix_start)
         )
-    stop_strings = ["|", "\n", "\\n"] # Heuristic stop tokens indicating model is trying to "talk to itself" rather than output a caption
+    #stop_strings = ["|", "\n", "\\n"] # Heuristic stop tokens indicating model is trying to "talk to itself" rather than output a caption
     out = model.generate(
         encoder_outputs=encoder_outputs,
         decoder_input_ids=decoder_input_ids,
@@ -141,7 +141,7 @@ def generate_caption(
         pad_token_id=tokenizer.pad_token_id,
         logits_processor=logits_processor,
         use_cache=True,
-        stop_strings=stop_strings,
+        #stop_strings=stop_strings,
         tokenizer=tokenizer,
     )
 
@@ -215,6 +215,7 @@ def main() -> None:
             predictions[access_id] = {
                 "references": references_by_id[access_id],
                 "prediction": processed_pred,
+                "raw_prediction": pred_raw,
             }
 
     out = Path(args.output_path)
