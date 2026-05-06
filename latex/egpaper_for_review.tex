@@ -331,7 +331,21 @@ $0.8$ for BLEU-1/ROUGE-L, beam-3 with $n$-gram block for CIDEr).}
 \label{tab:main}
 \end{table}
 
-Three patterns are visible in Table~\ref{tab:main}:
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.95\linewidth]{fig_sweep.pdf}
+\caption{AudioCaps test metrics for each of the 12 stage-1 training
+configurations (best generation setting per group). The blue band is $k{=}0$,
+the orange band is $k{=}2$, and the red band is $k{=}4$. Retrieval depth is the
+dominant factor: $k{=}0$ collapses (BLEU-4 and CIDEr are essentially zero),
+$k{=}2$ jumps to within $0.01$ CIDEr of the best, and $k{=}4$ wins every
+metric. Prompt dropout and weight decay each move metrics by less than
+$0.01$ within a band.}
+\label{fig:sweep}
+\end{figure*}
+
+Three patterns are visible in Table~\ref{tab:main} and
+Figure~\ref{fig:sweep}:
 
 \begin{enumerate}\itemsep1pt
 \item \textbf{Retrieval is the dominant factor.} The $k{=}0$ baseline collapses
