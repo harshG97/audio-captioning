@@ -477,14 +477,33 @@ scorers are all hand-designed pieces that the network does not modify. The
 model expects a precomputed CLAP audio hidden state (shape $64\times768$) on
 the input side and a sequence of GPT-2 BPE token IDs as labels; we mask
 prompt tokens out of the loss so cross-entropy is computed only over the
-caption span. The model overfit modestly in stage~1 (eval loss reached its
-minimum around epoch~9 and crept back up by epoch~12), which the
-\texttt{load\_best\_model\_at\_end} hook handles. It overfit more aggressively
-in stage~2, which is why we cap stage~2 at 10 epochs and use weight decay
-$0.01$. We did not measure cross-domain (AudioCaps$\rightarrow$Clotho)
-generalisation as originally proposed, so the strongest claims about
-generalisation in the original RECAP paper~\cite{ghosh2024recap} are
-\emph{not} something we replicate.
+caption span.
+
+Figure~\ref{fig:loss} summarises the training dynamics of the best stage-1
+configuration and its stage-2 continuation. In stage~1 the gap between train
+and val loss is small and val loss bottoms out near epoch~9 before drifting
+upward, so the \texttt{load\_best\_model\_at\_end} hook restores the
+epoch-9 weights. In stage~2, with all $\sim$120\,M GPT-2 parameters
+unfrozen, train loss falls steeply but val loss diverges much sooner --
+its minimum is around epoch~15 (i.e.\ about 3 fine-tune epochs in) and the
+gap between the two curves grows fast after that. This is why stage~2 is
+capped at 10 epochs, uses weight decay $0.01$, and a deliberately small
+decoder LR ($2\!\times\!10^{-6}$). We did not measure cross-domain
+(AudioCaps$\rightarrow$Clotho) generalisation as originally proposed, so
+the strongest claims about generalisation in the original RECAP
+paper~\cite{ghosh2024recap} are \emph{not} something we replicate.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{fig_loss.pdf}
+\caption{Train and val cross-entropy across stages. Stage~1 (blue, 12
+epochs, cross-attention only) overfits mildly: val loss is U-shaped with a
+minimum around epoch~9. Stage~2 (red, 10 additional epochs, GPT-2 unfrozen)
+overfits faster -- val loss reaches its minimum at epoch~15 and rises
+sharply after. Both stages select the best-val checkpoint via
+\texttt{load\_best\_model\_at\_end}.}
+\label{fig:loss}
+\end{figure}
 
 \subsection{Future work}
 Three directions look promising. First, \textbf{cross-domain evaluation}:
