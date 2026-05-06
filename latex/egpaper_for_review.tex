@@ -6,6 +6,10 @@
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds}
 
 % Include other packages here, before hyperref.
 
@@ -24,22 +28,24 @@
 \begin{document}
 
 %%%%%%%%% TITLE
-\title{Project Report : CS 7643}
+\title{Project Report: Retrieval-Augmented Audio Captioning (RECAP)\\
+\large CS 7643 -- Team NoCap}
 
-\author{First Author\\
-Institution1\\
-Institution1 address\\
-{\tt\small firstauthor@i1.org}
-% For a paper whose authors are all at the same institution,
-% omit the following lines up until the closing ``}''.
-% Additional authors and addresses can be added with ``\and'',
-% just like the second author.
-% To save space, use either the email address or home page, not both
+\author{Mallika Lakshminarayan\\
+Georgia Institute of Technology\\
+{\tt\small mlakshmi3@gatech.edu}
 \and
-Second Author\\
-Institution2\\
-First line of institution2 address\\
-{\tt\small secondauthor@i2.org}
+Andrew J. Park\\
+Georgia Institute of Technology\\
+{\tt\small apark363@gatech.edu}
+\and
+Malhar Jadhav\\
+Georgia Institute of Technology\\
+{\tt\small mjadhav6@gatech.edu}
+\and
+Harsh Gupta\\
+Georgia Institute of Technology\\
+{\tt\small hgupta312@gatech.edu}
 }
 
 \maketitle
@@ -47,380 +53,472 @@ First line of institution2 address\\
 
 %%%%%%%%% ABSTRACT
 \begin{abstract}
-   The ABSTRACT is to be in fully-justified italicized text, at the top
-   of the left-hand column, below the author and affiliation
-   information. Use the word ``Abstract'' as the title, in 12-point
-   Times, boldface type, centered relative to the column, initially
-   capitalized. The abstract is to be in 10-point, single-spaced type.
-   Leave two blank lines after the Abstract, then begin the main text.
-   Look at previous CVPR abstracts to get a feel for style and length. 
-   The abstract section should contain a brief summary of your work that
-   includes the problem statement, proposed solution and results.
+\textit{
+We study \textbf{RECAP} (Retrieval-Augmented Audio Captioning), a parameter-efficient
+encoder--decoder model that conditions a frozen GPT-2 language decoder on a
+frozen CLAP audio encoder through trainable cross-attention layers, while
+additionally prepending top-$k$ captions retrieved from an external datastore
+to the decoder prompt. We re-implement RECAP in PyTorch and study its
+behaviour on the AudioCaps benchmark. We sweep three retrieval depths
+($k\in\{0,2,4\}$), two prompt-dropout settings, two weight-decay settings, and
+six generation configurations, for a total of 96 evaluated configurations.
+Retrieval is the dominant factor: the no-retrieval baseline collapses to
+CIDEr $0.005$, $k{=}2$ reaches $0.30$, and $k{=}4$ reaches $0.31$ CIDEr with
+BLEU-1 $0.484$ and METEOR $0.186$. A subsequent stage-2 fine-tune that unfreezes
+GPT-2 with a small decoder learning rate yields a small but consistent gain on
+top of the best stage-1 model, confirming that the cross-attention bottleneck
+benefits from a controlled relaxation. We discuss what does and does not
+generalise, where the model fails, and which knobs matter.
+}
 \end{abstract}
 
 %%%%%%%%% BODY TEXT
-\section{Introduction/Background/Motivation}
+\section{Introduction / Background / Motivation}
 
-(5 points) What did you try to do? What problem did you try to solve? Articulate your objectives using absolutely no jargon. 
+\paragraph{What we tried to do.}
+We set out to build a system that listens to a 10-second audio clip and writes
+a one-sentence English description of what it hears -- e.g.\ ``a dog barks
+twice and a child laughs.'' This task, automated audio captioning (AAC),
+maps a variable-length acoustic signal to a variable-length sentence and is
+inherently multimodal: the model must learn to ground language in sound.
 
-(5 points) How is it done today, and what are the limits of current practice?
+\paragraph{How it is done today.}
+The dominant paradigm is encoder--decoder: a pre-trained audio encoder produces
+a sequence of embeddings, and an autoregressive language decoder turns those
+embeddings into text~\cite{gontier2021bart,kim2023prefix,mei2021act,chen2020audiocaptioning}.
+Recent work has converged on adapter-style or prefix-style training: keep the
+encoder and decoder frozen and learn only a small bridge between them.
+Two limitations remain. First, large language decoders trained only on text
+hallucinate sound events that are not in the clip. Second, models trained on
+one captioning corpus underperform on out-of-domain audio because the captions
+in their training set never described the relevant events.
+RECAP~\cite{ghosh2024recap} addresses both by retrieving similar captions from
+an external datastore using CLAP~\cite{wu2023clap} and pasting them into the
+decoder's prompt. The retrieved captions act as a soft, swappable knowledge
+source, in the same spirit as RAG for text~\cite{lewis2020rag} and
+retrieval-augmented image captioning~\cite{sarto2022retrieval,ramos2023smallcap}.
 
-(5 points) Who cares? If you are successful, what difference will it make? 
+\paragraph{Who cares.}
+Reliable AAC unlocks audio-only accessibility (caption sound for the
+deaf and hard-of-hearing in places where ASR is insufficient), large-scale
+indexing of media archives, content moderation on platforms whose video is
+processed audio-first, and tooling for audio journals or field recordings.
+Retrieval-based approaches are particularly attractive in deployment because
+they expose the source of evidence (the retrieved captions) and can be updated
+by editing the datastore rather than retraining the model.
 
-(5 points) What data did you use? Provide details about your data, specifically choose the most important aspects of your data mentioned \href{https://arxiv.org/abs/1803.09010}{here}. You don’t have to choose all of them, just the most relevant.
-%-------------------------------------------------------------------------
-%------------------------------------------------------------------------
+\paragraph{Data.}
+We use the \textbf{AudioCaps} dataset~\cite{kim2019audiocaps}, a subset of
+AudioSet~\cite{gemmeke2017audioset} that has been re-annotated with free-form
+natural language. The corpus contains roughly $50{,}000$ training, $495$
+validation, and $975$ test clips, each $\approx 10$\,s of YouTube audio. Each
+training clip has a single caption; validation and test clips have five
+human-written captions each, which lets standard captioning metrics aggregate
+over multiple references. From the
+\href{https://arxiv.org/abs/1803.09010}{Datasheets for Datasets} checklist we
+highlight: (i) \emph{collection} -- captions were written by Amazon Mechanical
+Turk workers shown an audio clip and selected AudioSet labels as priming;
+(ii) \emph{distribution} -- the dataset is Web-sourced, English-only, and
+biased toward common urban/household events; (iii) \emph{labels} -- the test
+captions are not perfectly clean (typos, partial sentences, occasional
+hallucinations), which puts a soft ceiling on metric scores;
+(iv) \emph{licensing} -- captions are released under CC BY 4.0 but the
+underlying audio must be re-downloaded from YouTube, so a non-trivial fraction
+of clips become unavailable over time. We restrict our experiments to
+AudioCaps and do not run cross-dataset transfer to Clotho~\cite{drossos2020clotho};
+the original proposal contemplated a Clotho cross-domain study, but the YouTube
+churn on AudioCaps and the cost of CLAP feature extraction consumed the
+compute budget we had earmarked for it.
+
 \section{Approach}
 
-(10 points) What did you do exactly? How did you solve the problem? Why did you think it would be successful? Is anything new in your approach? 
+\subsection{Model}
+RECAP is a three-block encoder--decoder model:
 
-(5 points) What problems did you anticipate? What problems did you encounter? Did the very first thing you tried work? 
+\begin{enumerate}\itemsep0pt
+\item \textbf{Audio encoder} (frozen). The audio branch of the
+\texttt{laion/clap-htsat-fused} CLAP checkpoint~\cite{wu2023clap}. We discard
+the projection head and use the last hidden state of the audio transformer,
+giving a $(64, 768)$ matrix per clip.
+\item \textbf{Text decoder} (frozen weights, with newly-inserted layers).
+GPT-2 base~\cite{radford2019gpt2}. Each of the 12 transformer blocks is
+augmented with a randomly-initialized \emph{cross-attention} sublayer
+that attends from token positions to the 64 audio frames. Self-attention,
+MLP, and embedding weights are inherited unchanged.
+\item \textbf{Cross-attention bridge} (trainable). $\mathcal{Q}$, $\mathcal{K}$,
+$\mathcal{V}$, and output projections, plus the LayerNorms that gate them,
+are the only parameters that receive gradients during stage-1 training.
+About $7$\,M parameters out of $\approx 130$\,M total ($\sim 5\%$) are
+trainable, in line with the parameter-efficient claim of the original
+paper~\cite{ghosh2024recap}.
+\end{enumerate}
 
-\textbf{Important: Mention any code repositories (with citations) or other sources that you used, and specifically what changes you made to them for your project. }
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\footnotesize,
+  node distance=4mm,
+  block/.style={draw, rounded corners=2pt, minimum height=6mm, minimum width=18mm, align=center, inner sep=2pt},
+  frozen/.style={block, fill=gray!12},
+  trained/.style={block, fill=green!18, draw=green!50!black},
+  arr/.style={-Latex, thick}
+]
+\node[frozen] (clap) {CLAP audio enc.\\ \emph{frozen}};
+\node[frozen, right=12mm of clap] (gpt2) {GPT-2 self-attn\\+MLP \emph{frozen}};
+\node[trained, below=4mm of gpt2] (xattn) {Cross-attn\\\emph{trainable}};
+\node[block, fill=blue!10, left=8mm of clap] (wav) {raw audio};
+\node[block, fill=blue!10, below=4mm of clap] (clap2) {CLAP text\\enc.\\ \emph{frozen}};
+\node[block, fill=orange!15, left=4mm of clap2] (store) {Caption\\datastore};
+\node[block, fill=orange!15, below=4mm of xattn] (prompt) {Prompt: ``Audios similar\ldots~\textit{c1, c2, c3, c4.}\\This audio sounds like:''};
+\node[block, fill=red!10, right=8mm of gpt2] (cap) {output\\caption};
+
+\draw[arr] (wav) -- (clap);
+\draw[arr] (clap) -- node[above]{\tiny 64$\times$768} (gpt2);
+\draw[arr] (xattn) -- (gpt2);
+\draw[arr] (store) -- (clap2);
+\draw[arr] (clap2) -- node[right]{\tiny top-$k$} (prompt);
+\draw[arr] (prompt) -- (xattn);
+\draw[arr] (gpt2) -- (cap);
+
+\begin{scope}[on background layer]
+  \node[draw, dashed, rounded corners, fit=(clap2) (store) (prompt), inner sep=2mm, label=below:\tiny retrieval branch] {};
+\end{scope}
+\end{tikzpicture}
+\caption{RECAP architecture. The audio encoder and GPT-2 backbone are frozen;
+only the cross-attention sublayers (green) are trained in stage~1. The
+retrieval branch (dashed) selects $k$ captions from the AudioCaps training set
+using CLAP cosine similarity and pastes them into the prompt fed to the decoder.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Retrieval}
+Following~\cite{ghosh2024recap}, we score the audio against every training
+caption with CLAP cosine similarity. We pre-compute the $\sim 50{,}000\times
+512$ caption embedding matrix once and reuse it across all retrieval
+configurations. For test queries we exclude any caption whose clip ID matches
+the query (a \emph{leakage guard} that the build script enforces by
+default).
+
+We compare two retrieval strategies. \textbf{Top-$k$} simply takes the $k$
+captions with the highest cosine similarity. \textbf{Maximal Marginal
+Relevance (MMR)}~\cite{carbonell1998mmr} re-scores each candidate as
+$\lambda \cdot \mathrm{rel}(q,c) - (1-\lambda)\cdot
+\max_{c' \in S}\mathrm{sim}(c, c')$, where $S$ is the set already chosen, and
+greedily picks $k$ items. With $\lambda=1$ MMR reduces to top-$k$; we use
+$\lambda=0.7$, biasing slightly toward diversity.
+
+The retrieved captions $c_1,\dots,c_k$ are pasted into the decoder prompt:
+\begin{quote}\small
+\texttt{Audios similar to this audio sounds like: $c_1$, $c_2$, $\dots$, $c_k$.}\\
+\texttt{This audio sounds like:}
+\end{quote}
+With $k=0$ this collapses to ``\texttt{This audio sounds like:}'', the
+no-retrieval baseline.
+
+\subsection{Training}
+\paragraph{Stage 1 -- cross-attention only.}
+Encoder and decoder are frozen; only the cross-attention sublayers and their
+LayerNorms receive gradients ($\approx 7$\,M params). We minimize standard
+left-to-right cross-entropy on the gold caption tokens (the prompt itself is
+masked out of the loss). Optimisation: AdamW~\cite{loshchilov2019adamw},
+peak LR $5\!\times\!10^{-5}$, linear warmup $3\%$ then linear decay,
+batch size 16, mixed-precision \texttt{bf16}, 12 epochs (15 for the $k{=}0$
+baseline, which converges more slowly because retrieved captions no longer
+provide a head-start).
+
+\paragraph{Prompt dropout.} A failure mode of RAG-style decoders is to learn
+to copy from the retrieved captions and ignore the audio.
+\textit{Prompt dropout} replaces the retrieved-captions prefix with the
+baseline prompt with probability $p_d$ during training, forcing the cross-
+attention path to remain useful.
+We sweep $p_d\in\{0, 0.25\}$.
+
+\paragraph{Stage 2 -- decoder fine-tune.}
+We unfreeze the full GPT-2 stack and continue training with a
+\emph{dual learning rate}: cross-attention sublayers stay at
+$5\!\times\!10^{-5}$, GPT-2 backbone params (incl.\ \texttt{wte} and
+\texttt{lm\_head}) train at $2\!\times\!10^{-6}$ -- about $25\times$ smaller.
+This is the only stage where the language model itself adapts to the
+audio domain, and the small decoder LR is intended to prevent the LM from
+drifting away from grammatical English. Weight decay is bumped to $0.01$ to
+counter overfitting now that the parameter count grew $\sim 18\times$.
+
+\subsection{Code, what we built, and what we changed}
+We started from the public RECAP reference
+implementation\footnote{\url{https://github.com/Sreyan88/RECAP}} for the
+high-level architecture skeleton and reused the \textsc{Hugging~Face}
+\texttt{transformers}~\cite{wolf2020transformers} interfaces for both
+backbones. The pieces we authored from scratch include: (i) the entire data
+and feature-cache pipeline (\texttt{data/audio\_preprocess.py},
+\texttt{data/recap\_dataset.py}); (ii) the retrieval datastore builder with
+both top-$k$ and MMR strategies and an explicit train/eval leakage guard
+(\texttt{retrieval/}); (iii) a custom GPT-2 cross-attention block that
+correctly accepts the CLAP $768$-d hidden size (\texttt{model/gpt2\_xattn.py},
+\texttt{model/cross\_attention.py}); (iv) the
+\texttt{train.py}/\texttt{finetune.py} pair, including the dual-LR optimizer
+that the stock \textsc{HF} \texttt{Trainer} does not provide; (v) the sweep
+harness (\texttt{scripts/sweep.py}, $\approx 96$ runs) and the metrics-scoring
+wrapper.
+
+\subsection{What we anticipated, what bit us}
+\textbf{Anticipated.} (a) GPT-2 would copy from retrieved captions instead of
+attending to the audio; (b) feature extraction would dominate runtime;
+(c) bf16 instability with cross-attention LayerNorms.
+
+\textbf{Encountered.} (a) materialised, motivating prompt dropout; (b)
+pre-caching CLAP hidden states as HDF5 made each epoch about $7\times$ faster;
+(c) was a non-issue. Three other surprises consumed real time: (i) GPT-2's
+default tokenizer has no BOS/EOS, and our generation loop initially never
+produced an EOS, so test-time outputs ran on past the gold caption length and
+hurt all metrics -- we explicitly added BOS/EOS and re-checked end-token
+distribution before re-running the sweep
+(\texttt{scripts/check\_eos.py}); (ii) the first version of the retrieval
+cache silently included the query's own caption among its neighbours, which
+inflated training scores by 4--5 CIDEr points and validation scores by
+none; we added a self-exclusion guard
+(\texttt{scripts/check\_retrieval\_leakage.py}); (iii) early sweeps used a
+prompt that omitted the comma-separator, which made the decoder occasionally
+parse retrieved captions as a single run-on sentence -- the final prompt
+template is the one shown in \S2.2.
 
 \section{Experiments and Results}
 
-(10 points) How did you measure success? What experiments were used? What were the results, both quantitative and qualitative? Did you succeed? Did you fail? Why? Justify your reasons with arguments supported by evidence and data.
+\subsection{Setup}
+All models train on AudioCaps train, are model-selected on AudioCaps val
+(\texttt{eval\_loss}, lowest), and report on AudioCaps test. Captions are
+lowercased and tokenized with GPT-2 BPE; the maximum decoder length is 128
+tokens (long enough for the prompt + caption with margin).
 
-\textbf{Important: This section should be rigorous and thorough. Present detailed information about decision you made, why you made them, and any evidence/experimentation to back them up. This is especially true if you leveraged existing architectures, pre-trained models, and code (i.e. do not just show results of fine-tuning a pre-trained model without any analysis, claims/evidence, and conclusions, as that tends to not make a strong project). }
+\paragraph{Metrics.}
+We report BLEU-1/4~\cite{papineni2002bleu}, ROUGE-L~\cite{lin2004rouge},
+METEOR~\cite{banerjee2005meteor}, and CIDEr~\cite{vedantam2015cider}, computed
+with the \texttt{aac-metrics} package. SPICE/SPIDEr were not computed because
+their dependency stack failed to install on our compute cluster -- we note
+this as a limitation. CIDEr is widely treated as the most discriminative
+single number for AAC and is the metric we use to pick a winning configuration.
 
-%-------------------------------------------------------------------------
-\section{Other Sections}
+\paragraph{Hyperparameter sweep.}
+We sweep over three groups (Table~\ref{tab:hp}):
 
-\begin{table*}
-\begin{center}
-\begin{tabular}{|l|c|p{8cm}|}
-\hline
-Student Name & Contributed Aspects & Details \\
-\hline\hline
-Team Member 1 & Data Creation and Implementation & Scraped the dataset for this project and trained the CNN of the encoder. Implemented attention mechanism to improve results. \\
-Team Member 2 & Implementation and Analysis & Trained the LSTM of the encoder and analyzed the results. Analyzed effect of number of nodes in hidden state.  Implemented Convolutional LSTM. \\
-\hline
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lll}
+\toprule
+\textbf{Group} & \textbf{Flag} & \textbf{Values} \\
+\midrule
+\multirow{4}{*}{Training}
+ & retrieval $k$        & $0,\;2,\;4$ \\
+ & prompt dropout $p_d$ & $0.0,\;0.25$ \\
+ & weight decay         & $0.0,\;0.01$ \\
+ & epochs               & $12$ ($k\in\{2,4\}$); $15$ ($k{=}0$) \\
+\midrule
+\multirow{3}{*}{Generation}
+ & num\_beams           & $1,\;3$ \\
+ & no-repeat $n$-gram   & $0,\;3$ \\
+ & length penalty       & $0.8,\;1.0$ \\
+\midrule
+Stage~2 & decoder LR / wd / $p_d$ / ep & $2{\times}10^{-6}$ / $0.01$ / $0$ / $10$ \\
+\bottomrule
 \end{tabular}
-\end{center}
-\caption{Contributions of team members.}
-\label{tab:contributions}
+\caption{Hyperparameter grid. The cross-product gives 96 evaluated
+configurations in stage~1; stage~2 fine-tunes the single best stage-1
+checkpoint.}
+\label{tab:hp}
+\end{table}
+
+\subsection{Stage-1 main result: retrieval depth dominates}
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Config (best gen.\ per row)} & \textbf{B-1} & \textbf{B-4} & \textbf{R-L} & \textbf{C} & \textbf{M} \\
+\midrule
+$k{=}0$, $p_d{=}0$, wd$=0$        & 0.131 & 0.000 & 0.128 & 0.003 & 0.052 \\
+$k{=}0$, $p_d{=}0$, wd$=0.01$     & 0.178 & 0.000 & 0.151 & 0.003 & 0.063 \\
+$k{=}0$, $p_d{=}.25$, wd$=0$      & 0.114 & 0.000 & 0.080 & 0.004 & 0.043 \\
+$k{=}0$, $p_d{=}.25$, wd$=0.01$   & 0.144 & 0.000 & 0.127 & 0.005 & 0.061 \\
+\midrule
+$k{=}2$, $p_d{=}0$, wd$=0$        & 0.466 & 0.094 & 0.331 & 0.299 & 0.182 \\
+$k{=}2$, $p_d{=}0$, wd$=0.01$     & 0.456 & 0.092 & 0.329 & 0.298 & 0.180 \\
+$k{=}2$, $p_d{=}.25$, wd$=0$      & 0.458 & 0.092 & 0.332 & 0.301 & 0.182 \\
+$k{=}2$, $p_d{=}.25$, wd$=0.01$   & 0.465 & 0.093 & 0.329 & 0.298 & 0.182 \\
+\midrule
+$k{=}4$, $p_d{=}0$, wd$=0$        & \textbf{0.484} & 0.097 & \textbf{0.339} & \textbf{0.311} & 0.186 \\
+$k{=}4$, $p_d{=}0$, wd$=0.01$     & 0.478 & 0.097 & 0.337 & 0.309 & \textbf{0.186} \\
+$k{=}4$, $p_d{=}.25$, wd$=0$      & 0.480 & 0.094 & 0.337 & 0.306 & 0.186 \\
+$k{=}4$, $p_d{=}.25$, wd$=0.01$   & 0.480 & 0.097 & 0.335 & 0.305 & 0.184 \\
+\bottomrule
+\end{tabular}
+\caption{AudioCaps test metrics, best generation setting per training
+configuration. Rows are sorted by $k$; bold marks the overall best in each
+column. The training config $k{=}4, p_d{=}0,\text{wd}{=}0$ wins every column
+when scored at its own best generation setting (greedy with $n$-gram block
+$0.8$ for BLEU-1/ROUGE-L, beam-3 with $n$-gram block for CIDEr).}
+\label{tab:main}
+\end{table}
+
+Three patterns are visible in Table~\ref{tab:main}:
+
+\begin{enumerate}\itemsep1pt
+\item \textbf{Retrieval is the dominant factor.} The $k{=}0$ baseline collapses
+to near-zero CIDEr regardless of regularisation: when we removed retrieval, the
+trained cross-attention alone could not bridge from the audio
+embedding to a fluent English caption -- the decoder mostly emits short
+generic phrases (``a man speaks''), bleeds repetition, and fails to produce
+the four-token sequences that BLEU-4 needs. Going from $k{=}2$ to $k{=}4$
+yields a smaller but real $+0.01$ CIDEr step. Beyond $k{=}4$ we saw negligible
+returns in pilot runs and stopped exploring.
+\item \textbf{Prompt dropout did not help.} On AudioCaps, the cross-attention
+already pays attention to the audio (CIDEr collapses without retrieval, but
+$k{=}4$ outputs are well-grounded -- not literal copies of any retrieved
+caption). Forcing the decoder to occasionally see the bare prompt during
+training cost a fraction of a CIDEr point. Prompt dropout would likely matter
+more in cross-domain transfer (Clotho), which we did not run.
+\item \textbf{Weight decay was a wash.} $0$ vs.\ $0.01$ moved every metric by
+$<0.005$.
+\end{enumerate}
+
+\paragraph{Generation knobs matter.} Greedy decoding with no-repeat-$n$-gram
+of 3 and length penalty $0.8$ wins BLEU-1/ROUGE-L; beam-3 with the same
+$n$-gram block but length penalty $1.0$ wins CIDEr. The right-leaning
+beam choice produces marginally longer, more specific captions that CIDEr's
+TF-IDF weighting rewards.
+
+\subsection{Stage-2 fine-tune: a small but real lift}
+
+We took the best stage-1 checkpoint
+(\textsc{top4}-$p_d{=}0$-wd$=0$-ep$12$-lr$5{\times}10^{-5}$) and continued
+training for 10 epochs with the dual-LR scheme of \S2.3.
+Table~\ref{tab:ft} compares the two checkpoints at the CIDEr-best generation
+setting (\texttt{nb=3, no\_repeat\_ngram=3, lp=1.0}).
+
+\begin{table}[t]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccccc}
+\toprule
+ & \textbf{B-1} & \textbf{B-4} & \textbf{R-L} & \textbf{C} & \textbf{M} \\
+\midrule
+Stage 1 best   & 0.484 & 0.097 & 0.339 & 0.311 & 0.186 \\
++ Stage-2 FT (10 ep) & \textbf{0.490} & \textbf{0.104} & \textbf{0.348} & \textbf{0.321} & \textbf{0.193} \\
+\midrule
+$\Delta$ & +0.006 & +0.007 & +0.009 & +0.010 & +0.007 \\
+\bottomrule
+\end{tabular}
+\caption{Stage-2 fine-tune on top of the best stage-1 model. Decoder LR
+$2\!\times\!10^{-6}$, cross-attention LR $5\!\times\!10^{-5}$, $p_d=0$,
+weight decay $0.01$, 10 epochs. All five metrics improve by a small but
+consistent margin.}
+\label{tab:ft}
+\end{table}
+
+The lift is small ($+0.010$ CIDEr, about $3\%$ relative) but consistent across
+all five metrics, which suggests the gain is genuine rather than a single-metric
+artifact. We attribute the limited size of the gain to two factors. First,
+AudioCaps has a single training caption per clip, which gives the unfrozen
+language model very little new signal to fit -- unlike, say, a five-reference
+dataset. Second, the small decoder LR was deliberately conservative: the
+cross-attention was already well-aligned, and we wanted to avoid relearning
+the bridge. Pushing the decoder LR higher in pilot runs hurt every metric,
+consistent with overfitting.
+
+\subsection{Qualitative analysis}
+
+\begin{table*}[t]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{0.18\textwidth} p{0.39\textwidth} p{0.39\textwidth}}
+\toprule
+\textbf{Reference (one of 5)} & \textbf{Top retrieved captions ($k{=}4$)} & \textbf{RECAP prediction} \\
+\midrule
+\emph{a missile launching followed by an explosion and metal screeching as a motor hums in the background} &
+``a whoosh and an explosion''; ``a long whistle and then an explosion''; ``a hissing sound followed by a bang''; ``rocket launches and explodes''
+& \emph{hissing then an explosion} \\
+\addlinespace
+\emph{a toy train running as a young boy talks followed by plastic clanking then a child laughing} &
+``a child speaking and a man laughing''; ``a young boy talks''; ``a humming machine and a child speaks''; ``a child laughs''
+& \emph{a young girl and a man speak before laughing and a woman says something} \\
+\addlinespace
+\emph{a machine is making clicking sound as people talk in the background} &
+``rattling and people speaking''; ``a machine clicks while a man speaks''; ``vehicle engine and people in distance''; ``mechanical clicking''
+& \emph{rustling and sputtering with people speaking and wind blowing} \\
+\bottomrule
+\end{tabular}
+\caption{Qualitative outputs of the best stage-1 model on three AudioCaps test
+clips. The model copies broad acoustic categories from the retrieved captions
+(speech, machinery, explosion) but rephrases freely; it sometimes substitutes
+a related-but-wrong sound (``hissing'' for ``missile,'' ``rustling and
+sputtering and wind'' for ``rattling clicking'') -- a typical failure mode
+when the audio contains a sound class that is rare in the training set.}
+\label{tab:qual}
 \end{table*}
 
+Table~\ref{tab:qual} shows three test outputs. The model reliably picks up
+the dominant acoustic category (speech, machinery, an explosion) and writes
+fluent English, but it confuses sounds within a category (``rustling''
+vs.\ ``rattling''; ``hissing'' vs.\ ``missile launch''). This is consistent with
+CLAP's known weakness on rare event labels and with the observation that
+RECAP \emph{retrieves what it knows}: when the retrieved set itself does not
+include the right phrase, the decoder cannot synthesise it from the audio
+alone.
 
+\subsection{What was learned vs.\ designed; loss \& generalisation}
+The cross-attention sublayers and stage-2 GPT-2 backbone are the only
+\emph{learned} parameters. CLAP's audio encoder, the retrieval index, the
+prompt template, the leakage guard, the BOS/EOS tokens, and the metric
+scorers are all hand-designed pieces that the network does not modify. The
+model expects a precomputed CLAP audio hidden state (shape $64\times768$) on
+the input side and a sequence of GPT-2 BPE token IDs as labels; we mask
+prompt tokens out of the loss so cross-entropy is computed only over the
+caption span. The model overfit modestly in stage~1 (eval loss reached its
+minimum around epoch~9 and crept back up by epoch~12), which the
+\texttt{load\_best\_model\_at\_end} hook handles. It overfit more aggressively
+in stage~2, which is why we cap stage~2 at 10 epochs and use weight decay
+$0.01$. We did not measure cross-domain (AudioCaps$\rightarrow$Clotho)
+generalisation as originally proposed, so the strongest claims about
+generalisation in the original RECAP paper~\cite{ghosh2024recap} are
+\emph{not} something we replicate.
 
-You are welcome to introduce additional sections or subsections, if required, to address the following questions in detail. 
-
-(5 points) Appropriate use of figures / tables / visualizations. Are the ideas presented with appropriate illustration? Are the results presented clearly; are the important differences illustrated? 
-
-(5 points) Overall clarity. Is the manuscript self-contained? Can a peer who has also taken Deep Learning understand all of the points addressed above? Is sufficient detail provided? 
-
-(5 points) Finally, points will be distributed based on your understanding of how your project relates to Deep Learning. Here are some questions to think about: 
-
-What was the structure of your problem? How did the structure of your model reflect the structure of your problem? 
-
-What parts of your model had learned parameters (e.g., convolution layers) and what parts did not (e.g., post-processing classifier probabilities into decisions)? 
-
-What representations of input and output did the neural network expect? How was the data pre/post-processed?
-What was the loss function? 
-
-Did the model overfit? How well did the approach generalize? 
-
-What hyperparameters did the model have? How were they chosen? How did they affect performance? What optimizer was used? 
-
-What Deep Learning framework did you use? 
-
-What existing code or models did you start with and what did those starting points provide? 
-
-Briefly discuss potential future work that the research community could focus on to make improvements in the direction of your project's topic.
-
-
-%-------------------------------------------------------------------------
+\subsection{Future work}
+Three directions look promising. First, \textbf{cross-domain evaluation}:
+the original RECAP paper's strongest claim is that retrieval helps under
+domain shift; testing AudioCaps$\rightarrow$Clotho with our pipeline is
+mechanically straightforward and we see no reason it would not work given
+more compute. Second, \textbf{larger/curated datastores}: \cite{ghosh2024recap}
+augments the datastore with $600$k synthetic audio captions; replicating that
+study and ablating composition (training-set-only vs.\ augmented) would
+isolate retrieval quality from model capacity. Third, \textbf{audio-aware
+re-ranking}: top-$k$ over CLAP cosine treats every retrieved caption equally;
+a learned re-ranker that conditions on both the audio and the candidate
+caption (e.g.\ a small bi-encoder) might recover the events that CLAP misses.
 
 \section{Work Division}
 
-Please add a section on the delegation of work among team members at the end of the report, in the form of a table and paragraph description. This and references do \textbf{NOT} count towards your page limit. An example has been provided in Table \ref{tab:contributions}.
-
-\newpage
-\newpage
-\section{Miscellaneous Information}
-
-The rest of the information in this format template has been adapted from CVPR 2020 and provides guidelines on the lower-level specifications regarding the paper's format.
-
-\subsection{Language}
-
-All manuscripts must be in English.
-
-
-\subsection{Paper length}
-Papers, excluding the references section,
-must be no longer than six pages in length. The references section
-will not be included in the page count, and there is no limit on the
-length of the references section. For example, a paper of six pages
-with two pages of references would have a total length of 8 pages.
-
-%-------------------------------------------------------------------------
-\subsection{The ruler}
-The \LaTeX\ style defines a printed ruler which should be present in the
-version submitted for review.  The ruler is provided in order that
-reviewers may comment on particular lines in the paper without
-circumlocution.  If you are preparing a document using a non-\LaTeX\
-document preparation system, please arrange for an equivalent ruler to
-appear on the final output pages.  The presence or absence of the ruler
-should not change the appearance of any other content on the page.  The
-camera ready copy should not contain a ruler. (\LaTeX\ users may uncomment
-the \verb'\cvprfinalcopy' command in the document preamble.)  Reviewers:
-note that the ruler measurements do not align well with lines in the paper
---- this turns out to be very difficult to do well when the paper contains
-many figures and equations, and, when done, looks ugly.  Just use fractional
-references (e.g.\ this line is $095.5$), although in most cases one would
-expect that the approximate location will be adequate.
-
-\subsection{Mathematics}
-
-Please number all of your sections and displayed equations.  It is
-important for readers to be able to refer to any particular equation.  Just
-because you didn't refer to it in the text doesn't mean some future reader
-might not need to refer to it.  It is cumbersome to have to use
-circumlocutions like ``the equation second from the top of page 3 column
-1''.  (Note that the ruler will not be present in the final copy, so is not
-an alternative to equation numbers).  All authors will benefit from reading
-Mermin's description of how to write mathematics:
-\url{http://www.pamitc.org/documents/mermin.pdf}.
-
-Finally, you may feel you need to tell the reader that more details can be
-found elsewhere, and refer them to a technical report.  For conference
-submissions, the paper must stand on its own, and not {\em require} the
-reviewer to go to a techreport for further details.  Thus, you may say in
-the body of the paper ``further details may be found
-in~\cite{Authors14b}''.  Then submit the techreport as additional material.
-Again, you may not assume the reviewers will read this material.
-
-Sometimes your paper is about a problem which you tested using a tool which
-is widely known to be restricted to a single institution.  For example,
-let's say it's 1969, you have solved a key problem on the Apollo lander,
-and you believe that the CVPR70 audience would like to hear about your
-solution.  The work is a development of your celebrated 1968 paper entitled
-``Zero-g frobnication: How being the only people in the world with access to
-the Apollo lander source code makes us a wow at parties'', by Zeus \etal.
-
-You can handle this paper like any other.  Don't write ``We show how to
-improve our previous work [Anonymous, 1968].  This time we tested the
-algorithm on a lunar lander [name of lander removed for blind review]''.
-That would be silly, and would immediately identify the authors. Instead
-write the following:
-\begin{quotation}
-\noindent
-   We describe a system for zero-g frobnication.  This
-   system is new because it handles the following cases:
-   A, B.  Previous systems [Zeus et al. 1968] didn't
-   handle case B properly.  Ours handles it by including
-   a foo term in the bar integral.
-
-   ...
-
-   The proposed system was integrated with the Apollo
-   lunar lander, and went all the way to the moon, don't
-   you know.  It displayed the following behaviours
-   which show how well we solved cases A and B: ...
-\end{quotation}
-As you can see, the above text follows standard scientific convention,
-reads better than the first version, and does not explicitly name you as
-the authors.  A reviewer might think it likely that the new paper was
-written by Zeus \etal, but cannot make any decision based on that guess.
-He or she would have to be sure that no other authors could have been
-contracted to solve problem B.
-\medskip
-
-\noindent
-FAQ\medskip\\
-{\bf Q:} Are acknowledgements OK?\\
-{\bf A:} No.  Leave them for the final copy.\medskip\\
-{\bf Q:} How do I cite my results reported in open challenges?
-{\bf A:} To conform with the double blind review policy, you can report results of other challenge participants together with your results in your paper. For your results, however, you should not identify yourself and should not mention your participation in the challenge. Instead present your results referring to the method proposed in your paper and draw conclusions based on the experimental comparison to other results.\medskip\\
-
-\begin{figure}[t]
+\begin{table*}[t]
 \begin{center}
-\fbox{\rule{0pt}{2in} \rule{0.9\linewidth}{0pt}}
-   %\includegraphics[width=0.8\linewidth]{egfigure.eps}
-\end{center}
-   \caption{Example of caption.  It is set in Roman so that mathematics
-   (always set in Roman: $B \sin A = A \sin B$) may be included without an
-   ugly clash.}
-\label{fig:long}
-\label{fig:onecol}
-\end{figure}
-
-\subsection{Miscellaneous}
-
-\noindent
-Compare the following:\\
-\begin{tabular}{ll}
- \verb'$conf_a$' &  $conf_a$ \\
- \verb'$\mathit{conf}_a$' & $\mathit{conf}_a$
-\end{tabular}\\
-See The \TeX book, p165.
-
-The space after \eg, meaning ``for example'', should not be a
-sentence-ending space. So \eg is correct, {\em e.g.} is not.  The provided
-\verb'\eg' macro takes care of this.
-
-When citing a multi-author paper, you may save space by using ``et alia'',
-shortened to ``\etal'' (not ``{\em et.\ al.}'' as ``{\em et}'' is a complete word.)
-However, use it only when there are three or more authors.  Thus, the
-following is correct: ``
-   Frobnication has been trendy lately.
-   It was introduced by Alpher~\cite{Alpher02}, and subsequently developed by
-   Alpher and Fotheringham-Smythe~\cite{Alpher03}, and Alpher \etal~\cite{Alpher04}.''
-
-This is incorrect: ``... subsequently developed by Alpher \etal~\cite{Alpher03} ...''
-because reference~\cite{Alpher03} has just two authors.  If you use the
-\verb'\etal' macro provided, then you need not worry about double periods
-when used at the end of a sentence as in Alpher \etal.
-
-For this citation style, keep multiple citations in numerical (not
-chronological) order, so prefer \cite{Alpher03,Alpher02,Authors14} to
-\cite{Alpher02,Alpher03,Authors14}.
-
-
-\begin{figure*}
-\begin{center}
-\fbox{\rule{0pt}{2in} \rule{.9\linewidth}{0pt}}
-\end{center}
-   \caption{Example of a short caption, which should be centered.}
-\label{fig:short}
-\end{figure*}
-
-%------------------------------------------------------------------------
-\subsection{Formatting your paper}
-
-All text must be in a two-column format. The total allowable width of the
-text area is $6\frac78$ inches (17.5 cm) wide by $8\frac78$ inches (22.54
-cm) high. Columns are to be $3\frac14$ inches (8.25 cm) wide, with a
-$\frac{5}{16}$ inch (0.8 cm) space between them. The main title (on the
-first page) should begin 1.0 inch (2.54 cm) from the top edge of the
-page. The second and following pages should begin 1.0 inch (2.54 cm) from
-the top edge. On all pages, the bottom margin should be 1-1/8 inches (2.86
-cm) from the bottom edge of the page for $8.5 \times 11$-inch paper; for A4
-paper, approximately 1-5/8 inches (4.13 cm) from the bottom edge of the
-page.
-
-%-------------------------------------------------------------------------
-\subsection{Margins and page numbering}
-
-All printed material, including text, illustrations, and charts, must be kept
-within a print area 6-7/8 inches (17.5 cm) wide by 8-7/8 inches (22.54 cm)
-high.
-
-
-
-%-------------------------------------------------------------------------
-\subsection{Type-style and fonts}
-
-Wherever Times is specified, Times Roman may also be used. If neither is
-available on your word processor, please use the font closest in
-appearance to Times to which you have access.
-
-MAIN TITLE. Center the title 1-3/8 inches (3.49 cm) from the top edge of
-the first page. The title should be in Times 14-point, boldface type.
-Capitalize the first letter of nouns, pronouns, verbs, adjectives, and
-adverbs; do not capitalize articles, coordinate conjunctions, or
-prepositions (unless the title begins with such a word). Leave two blank
-lines after the title.
-
-AUTHOR NAME(s) and AFFILIATION(s) are to be centered beneath the title
-and printed in Times 12-point, non-boldface type. This information is to
-be followed by two blank lines.
-
-The ABSTRACT and MAIN TEXT are to be in a two-column format.
-
-MAIN TEXT. Type main text in 10-point Times, single-spaced. Do NOT use
-double-spacing. All paragraphs should be indented 1 pica (approx. 1/6
-inch or 0.422 cm). Make sure your text is fully justified---that is,
-flush left and flush right. Please do not place any additional blank
-lines between paragraphs.
-
-Figure and table captions should be 9-point Roman type as in
-Figures~\ref{fig:onecol} and~\ref{fig:short}.  Short captions should be centred.
-
-\noindent Callouts should be 9-point Helvetica, non-boldface type.
-Initially capitalize only the first word of section titles and first-,
-second-, and third-order headings.
-
-FIRST-ORDER HEADINGS. (For example, {\large \bf 1. Introduction})
-should be Times 12-point boldface, initially capitalized, flush left,
-with one blank line before, and one blank line after.
-
-SECOND-ORDER HEADINGS. (For example, { \bf 1.1. Database elements})
-should be Times 11-point boldface, initially capitalized, flush left,
-with one blank line before, and one after. If you require a third-order
-heading (we discourage it), use 10-point Times, boldface, initially
-capitalized, flush left, preceded by one blank line, followed by a period
-and your text on the same line.
-
-%-------------------------------------------------------------------------
-\subsection{Footnotes}
-
-Please use footnotes\footnote {This is what a footnote looks like.  It
-often distracts the reader from the main flow of the argument.} sparingly.
-Indeed, try to avoid footnotes altogether and include necessary peripheral
-observations in
-the text (within parentheses, if you prefer, as in this sentence).  If you
-wish to use a footnote, place it at the bottom of the column on the page on
-which it is referenced. Use Times 8-point type, single-spaced.
-
-
-%-------------------------------------------------------------------------
-\subsection{References}
-
-List and number all bibliographical references in 9-point Times,
-single-spaced, at the end of your paper. When referenced in the text,
-enclose the citation number in square brackets, for
-example~\cite{Authors14}.  Where appropriate, include the name(s) of
-editors of referenced books.
-
-\begin{table}
-\begin{center}
-\begin{tabular}{|l|c|}
+\begin{tabular}{|l|c|p{8.5cm}|}
 \hline
-Method & Frobnability \\
+Student Name & Contributed Aspects & Details \\
 \hline\hline
-Theirs & Frumpy \\
-Yours & Frobbly \\
-Ours & Makes one's heart Frob\\
+Mallika Lakshminarayan & \emph{[placeholder]} & \emph{[placeholder]} \\
+Andrew J.\ Park        & \emph{[placeholder]} & \emph{[placeholder]} \\
+Malhar Jadhav          & \emph{[placeholder]} & \emph{[placeholder]} \\
+Harsh Gupta            & \emph{[placeholder]} & \emph{[placeholder]} \\
 \hline
 \end{tabular}
 \end{center}
-\caption{Results.   Ours is better.}
-\end{table}
+\caption{Contributions of team members. \emph{To be filled in.}}
+\label{tab:contributions}
+\end{table*}
+
+The contributions of each team member are summarised in
+Table~\ref{tab:contributions}. \emph{Detailed per-member descriptions to be
+added.}
 
 %-------------------------------------------------------------------------
-\subsection{Illustrations, graphs, and photographs}
-
-All graphics should be centered.  Please ensure that any point you wish to
-make is resolvable in a printed copy of the paper.  Resize fonts in figures
-to match the font in the body text, and choose line widths which render
-effectively in print.  Many readers (and reviewers), even of an electronic
-copy, will choose to print your paper in order to read it.  You cannot
-insist that they do otherwise, and therefore must not assume that they can
-zoom in to see tiny details on a graphic.
-
-When placing figures in \LaTeX, it's almost always best to use
-\verb+\includegraphics+, and to specify the  figure width as a multiple of
-the line width as in the example below
-{\small\begin{verbatim}
-   \usepackage[dvips]{graphicx} ...
-   \includegraphics[width=0.8\linewidth]
-                   {myfile.eps}
-\end{verbatim}
-}
-
-
-%-------------------------------------------------------------------------
-\subsection{Color}
-
-Please refer to the author guidelines on the CVPR 2020 web page for a discussion
-of the use of color in your document.
-
-%------------------------------------------------------------------------
-
-%-------------------------------------------------------------------------
-
 
 {\small
 \bibliographystyle{ieee_fullname}
