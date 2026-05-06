@@ -8,8 +8,6 @@
 \usepackage{amssymb}
 \usepackage{booktabs}
 \usepackage{multirow}
-\usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,backgrounds}
 
 % Include other packages here, before hyperref.
 
@@ -153,59 +151,32 @@ trainable, in line with the parameter-efficient claim of the original
 paper~\cite{ghosh2024recap}.
 \end{enumerate}
 
-\begin{figure}[t]
+\begin{figure*}[t]
 \centering
-\begin{tikzpicture}[
-  font=\footnotesize,
-  node distance=4mm,
-  block/.style={draw, rounded corners=2pt, minimum height=6mm, minimum width=18mm, align=center, inner sep=2pt},
-  frozen/.style={block, fill=gray!12},
-  trained/.style={block, fill=green!18, draw=green!50!black},
-  arr/.style={-Latex, thick}
-]
-\node[frozen] (clap) {CLAP audio enc.\\ \emph{frozen}};
-\node[frozen, right=12mm of clap] (gpt2) {GPT-2 self-attn\\+MLP \emph{frozen}};
-\node[trained, below=4mm of gpt2] (xattn) {Cross-attn\\\emph{trainable}};
-\node[block, fill=blue!10, left=8mm of clap] (wav) {raw audio};
-\node[block, fill=blue!10, below=4mm of clap] (clap2) {CLAP text\\enc.\\ \emph{frozen}};
-\node[block, fill=orange!15, left=4mm of clap2] (store) {Caption\\datastore};
-\node[block, fill=orange!15, below=4mm of xattn] (prompt) {Prompt: ``Audios similar\ldots~\textit{c1, c2, c3, c4.}\\This audio sounds like:''};
-\node[block, fill=red!10, right=8mm of gpt2] (cap) {output\\caption};
-
-\draw[arr] (wav) -- (clap);
-\draw[arr] (clap) -- node[above]{\tiny 64$\times$768} (gpt2);
-\draw[arr] (xattn) -- (gpt2);
-\draw[arr] (store) -- (clap2);
-\draw[arr] (clap2) -- node[right]{\tiny top-$k$} (prompt);
-\draw[arr] (prompt) -- (xattn);
-\draw[arr] (gpt2) -- (cap);
-
-\begin{scope}[on background layer]
-  \node[draw, dashed, rounded corners, fit=(clap2) (store) (prompt), inner sep=2mm, label=below:\tiny retrieval branch] {};
-\end{scope}
-\end{tikzpicture}
-\caption{RECAP architecture. The audio encoder and GPT-2 backbone are frozen;
-only the cross-attention sublayers (green) are trained in stage~1. The
-retrieval branch (dashed) selects $k$ captions from the AudioCaps training set
-using CLAP cosine similarity and pastes them into the prompt fed to the decoder.}
+\includegraphics[width=0.92\linewidth]{fig_architecture.png}
+\caption{RECAP architecture. The CLAP audio encoder and the GPT-2 decoder are
+frozen (snowflake); only the cross-attention sublayers between them are trained
+(flame). The retrieval branch (bottom-left) projects the input audio into
+CLAP's joint audio--text space, scores cosine similarity against the caption
+datastore, takes the top $k{=}4$ captions, and pastes them into the structured
+prompt that conditions GPT-2 alongside the cross-attention input.}
 \label{fig:arch}
-\end{figure}
+\end{figure*}
 
 \subsection{Retrieval}
 Following~\cite{ghosh2024recap}, we score the audio against every training
-caption with CLAP cosine similarity. We pre-compute the $\sim 50{,}000\times
-512$ caption embedding matrix once and reuse it across all retrieval
-configurations. For test queries we exclude any caption whose clip ID matches
-the query (a \emph{leakage guard} that the build script enforces by
-default).
+caption with CLAP cosine similarity. The datastore is the AudioCaps training
+set itself ($\approx 50{,}000$ captions). We pre-compute the
+$\approx 50{,}000\times 512$ caption embedding matrix once and reuse it across
+all configurations. The retrieval policy we use is \textbf{top-$k$}: take the
+$k$ captions with the highest cosine similarity to the query audio. We
+explicitly do \emph{not} use MMR or any diversity-based reranker --
+top-$k$ over CLAP cosine is the only retrieval strategy in our experiments.
 
-We compare two retrieval strategies. \textbf{Top-$k$} simply takes the $k$
-captions with the highest cosine similarity. \textbf{Maximal Marginal
-Relevance (MMR)}~\cite{carbonell1998mmr} re-scores each candidate as
-$\lambda \cdot \mathrm{rel}(q,c) - (1-\lambda)\cdot
-\max_{c' \in S}\mathrm{sim}(c, c')$, where $S$ is the set already chosen, and
-greedily picks $k$ items. With $\lambda=1$ MMR reduces to top-$k$; we use
-$\lambda=0.7$, biasing slightly toward diversity.
+To prevent train/eval leakage, we drop any retrieved caption whose source clip
+ID matches the query (a clip can never retrieve its own gold caption). The
+build script enforces this by default and aborts cache construction if any
+query's access\_id appears in the datastore.
 
 The retrieved captions $c_1,\dots,c_k$ are pasted into the decoder prompt:
 \begin{quote}\small
@@ -250,9 +221,9 @@ high-level architecture skeleton and reused the \textsc{Hugging~Face}
 \texttt{transformers}~\cite{wolf2020transformers} interfaces for both
 backbones. The pieces we authored from scratch include: (i) the entire data
 and feature-cache pipeline (\texttt{data/audio\_preprocess.py},
-\texttt{data/recap\_dataset.py}); (ii) the retrieval datastore builder with
-both top-$k$ and MMR strategies and an explicit train/eval leakage guard
-(\texttt{retrieval/}); (iii) a custom GPT-2 cross-attention block that
+\texttt{data/recap\_dataset.py}); (ii) the retrieval datastore builder
+with the top-$k$ CLAP-cosine strategy and an explicit train/eval leakage
+guard (\texttt{retrieval/}); (iii) a custom GPT-2 cross-attention block that
 correctly accepts the CLAP $768$-d hidden size (\texttt{model/gpt2\_xattn.py},
 \texttt{model/cross\_attention.py}); (iv) the
 \texttt{train.py}/\texttt{finetune.py} pair, including the dual-LR optimizer
