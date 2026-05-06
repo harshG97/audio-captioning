@@ -414,38 +414,57 @@ consistent with overfitting.
 
 \begin{table*}[t]
 \centering\small
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{p{0.18\textwidth} p{0.39\textwidth} p{0.39\textwidth}}
+\setlength{\tabcolsep}{6pt}
+\begin{tabular}{l p{0.42\textwidth} p{0.42\textwidth}}
 \toprule
-\textbf{Reference (one of 5)} & \textbf{Top retrieved captions ($k{=}4$)} & \textbf{RECAP prediction} \\
+& \textbf{Closest reference (of 5)} & \textbf{RECAP prediction} \\
 \midrule
+\multicolumn{3}{l}{\emph{Successes}} \\
+\midrule
+\textsc{mUGmCSNETcg\_310} &
+\emph{sizzling and a female speaking} &
+\emph{sizzling and a woman speaking} \\
+\addlinespace
+\textsc{tjCNwdOUiGc\_120} &
+\emph{humming of an engine followed by some honks of a horn} &
+\emph{humming of an idling engine followed by a loud horn blowing} \\
+\midrule
+\multicolumn{3}{l}{\emph{Representative failures}} \\
+\midrule
+\textsc{6BJ455B1aAs\_0} &
 \emph{a missile launching followed by an explosion and metal screeching as a motor hums in the background} &
-``a whoosh and an explosion''; ``a long whistle and then an explosion''; ``a hissing sound followed by a bang''; ``rocket launches and explodes''
-& \emph{hissing then an explosion} \\
+\emph{hissing then an explosion} \\
 \addlinespace
-\emph{a toy train running as a young boy talks followed by plastic clanking then a child laughing} &
-``a child speaking and a man laughing''; ``a young boy talks''; ``a humming machine and a child speaks''; ``a child laughs''
-& \emph{a young girl and a man speak before laughing and a woman says something} \\
-\addlinespace
+\textsc{7fmOlUlwoNg\_20} &
 \emph{a machine is making clicking sound as people talk in the background} &
-``rattling and people speaking''; ``a machine clicks while a man speaks''; ``vehicle engine and people in distance''; ``mechanical clicking''
-& \emph{rustling and sputtering with people speaking and wind blowing} \\
+\emph{rustling and sputtering with people speaking and wind blowing} \\
 \bottomrule
 \end{tabular}
-\caption{Qualitative outputs of the best stage-1 model on three AudioCaps test
-clips. The model copies broad acoustic categories from the retrieved captions
-(speech, machinery, explosion) but rephrases freely; it sometimes substitutes
-a related-but-wrong sound (``hissing'' for ``missile,'' ``rustling and
-sputtering and wind'' for ``rattling clicking'') -- a typical failure mode
-when the audio contains a sound class that is rare in the training set.}
+\caption{Qualitative outputs of the best stage-1 model on four AudioCaps
+test clips, with the closest of the five human references. \textbf{Top:} two
+clear successes -- in the first, the prediction matches one reference
+verbatim up to ``female''$\!\to\!$``woman''; in the second, the prediction not
+only names both events (engine humming and horn) but preserves the temporal
+``followed by'' ordering. \textbf{Bottom:} two characteristic failures showing
+the failure mode discussed in the text -- the model picks the dominant
+acoustic category but substitutes a related-but-wrong sound (``hissing'' for
+a missile launch, ``rustling and sputtering'' for mechanical clicking).}
 \label{tab:qual}
 \end{table*}
 
-Table~\ref{tab:qual} shows three test outputs. The model reliably picks up
-the dominant acoustic category (speech, machinery, an explosion) and writes
-fluent English, but it confuses sounds within a category (``rustling''
-vs.\ ``rattling''; ``hissing'' vs.\ ``missile launch''). This is consistent with
-CLAP's known weakness on rare event labels and with the observation that
+Table~\ref{tab:qual} shows two clear successes and two failures.
+The successes confirm that, when the relevant event class is well-represented
+in the AudioCaps training set, RECAP produces fluent multi-event captions in
+the right temporal order: the kitchen clip (\textsc{mUGmCSNETcg\_310}) yields
+\emph{sizzling and a woman speaking}, matching one of the five human captions
+nearly verbatim, and the bus clip (\textsc{tjCNwdOUiGc\_120}) yields
+\emph{humming of an idling engine followed by a loud horn blowing}, naming
+both events and getting the order right. The failure cases show the
+opposite pattern: the model reliably picks the dominant acoustic category
+(speech, machinery, an explosion) and writes fluent English, but confuses
+sounds within a category (``rustling'' vs.\ ``rattling''; ``hissing'' vs.\
+``missile launch''). This is consistent with CLAP's known weakness on rare
+event labels and with the observation that
 RECAP \emph{retrieves what it knows}: when the retrieved set itself does not
 include the right phrase, the decoder cannot synthesise it from the audio
 alone.
