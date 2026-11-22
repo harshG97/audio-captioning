@@ -26,6 +26,7 @@ from transformers import AutoTokenizer, LogitsProcessor, LogitsProcessorList
 from transformers.modeling_outputs import BaseModelOutput
 
 from data.access_id import DATASETS, build_access_id_column
+from data.caption_filter import warn_if_cache_has_placeholders
 from model.device import best_device
 from model.recap import RECAP
 from retrieval.prompt_builder import build_prompt
@@ -175,6 +176,7 @@ def main() -> None:
         raise ValueError("CSV must contain a 'caption' column.")
 
     cache = json.loads(Path(args.retrieval_cache).read_text())
+    warn_if_cache_has_placeholders(cache, source=args.retrieval_cache)
 
     # Group references by access_id (val/test clips have multiple gold captions)
     references_by_id: dict[str, list[str]] = {}

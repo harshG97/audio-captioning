@@ -9,6 +9,7 @@ import torch
 from transformers import AutoProcessor, ClapModel
 
 from data.access_id import DATASETS, build_access_id_column
+from data.caption_filter import drop_placeholder_captions
 from model.device import best_device
 
 
@@ -32,6 +33,8 @@ def main() -> None:
 
     if "caption" not in df.columns:
         raise ValueError(f"CSV must contain 'caption' column. Found: {set(df.columns)}")
+    # Must match the filtering in build_retrieval_cache.py so rows stay aligned.
+    df = drop_placeholder_captions(df, source=str(csv_path))
 
     device = best_device()
     print(f"Using device: {device}")

@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from data.access_id import DATASETS, build_access_id_column
+from data.caption_filter import drop_placeholder_captions
 
 
 def _l2_normalize(matrix: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -101,9 +102,13 @@ def main() -> None:
     ds_df = build_access_id_column(ds_df, args.datastore_dataset)
     if "caption" not in ds_df.columns:
         raise ValueError("Datastore CSV must contain a 'caption' column.")
+    # Same filtering as precompute_text_embeddings.py, so rows stay aligned.
+    ds_df = drop_placeholder_captions(ds_df, source=args.datastore_csv_path)
     if ds_emb.shape[0] != len(ds_df):
         raise ValueError(
-            f"Datastore embeddings {ds_emb.shape[0]} != caption rows {len(ds_df)}"
+            f"Datastore embeddings {ds_emb.shape[0]} != caption rows {len(ds_df)}. "
+            f"Rebuild the embeddings with precompute_text_embeddings.py from the same "
+            f"CSV (both scripts drop placeholder/empty captions)."
         )
     if ds_emb.shape[1] != query_emb.shape[1]:
         raise ValueError(

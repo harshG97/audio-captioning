@@ -30,6 +30,7 @@ import torch
 from torch.utils.data import Dataset
 
 from data.access_id import build_access_id_column
+from data.caption_filter import drop_placeholder_captions, warn_if_cache_has_placeholders
 from retrieval.prompt_builder import build_prompt
 
 
@@ -49,8 +50,11 @@ class RecapDataset(Dataset):
         df = build_access_id_column(df, dataset)
         if "caption" not in df.columns:
             raise ValueError("CSV must contain a 'caption' column.")
+        # Placeholder/empty captions are not valid training targets.
+        df = drop_placeholder_captions(df, source=csv_path)
 
         cache = json.loads(Path(retrieval_cache_path).read_text())
+        warn_if_cache_has_placeholders(cache, source=str(retrieval_cache_path))
 
         with h5py.File(hdf5_path, "r") as f:
             available = set(f.keys())
