@@ -406,8 +406,11 @@ Three `metrics_test.json` files give you the comparison table:
   `--num_beams 1` gives greedy decoding.
 - **Scoring.** `score_predictions.py` PTB-tokenizes references and
   predictions (needs Java), as in the standard COCO/DCASE evaluation, and
-  reports SPICE/SPIDEr unless `--skip_spice`. `--no_tokenize` reproduces the
-  older raw-string scores, which are not comparable with published numbers.
+  reports METEOR and SPICE/SPIDEr unless `--skip_meteor` or `--skip_spice`.
+  `scripts/sweep.py` scores each prediction file once and passes these on
+  as `--score_skip_meteor` and `--score_skip_spice`. `--no_tokenize`
+  reproduces the older raw-string scores, which are not comparable with
+  published numbers.
 - **Generation health.** The metrics JSON also has `eos_stop_rate`,
   `max_tokens_rate`, `postprocess_cut_rate`, `unique_rate`, `empty_rate` and
   (with `--train_csv`) `train_copy_rate`. A model that uses the audio should

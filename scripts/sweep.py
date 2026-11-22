@@ -9,8 +9,7 @@ Layout:
       predictions/
         test_preds_nb{nb}_nrngram{nrn}_lp{lp}.json
       metrics/
-        metrics_skip_java.json
-        metrics_with_java.json
+        metrics_nb{nb}_nrngram{nrn}_lp{lp}.json
 
 Retrieval caches are expected at:
   retrieval_cache_dir/retrieved_top{k}_{train,val,test}.json
@@ -61,9 +60,8 @@ def pred_name(nb: int, nrn: int, lp: float) -> str:
     return f"test_preds_nb{_fmt(nb)}_nrngram{_fmt(nrn)}_lp{_fmt(lp)}.json"
 
 
-def metrics_name(skip_java: bool, nb: int, nrn: int, lp: float) -> str:
-    base = "skip_java" if skip_java else "with_java"
-    return f"metrics_{base}_nb{_fmt(nb)}_nrngram{_fmt(nrn)}_lp{_fmt(lp)}.json"
+def metrics_name(nb: int, nrn: int, lp: float) -> str:
+    return f"metrics_nb{_fmt(nb)}_nrngram{_fmt(nrn)}_lp{_fmt(lp)}.json"
 
 
 def cache_path(retrieval_cache_dir: Path, k: int, split: str) -> Path:
@@ -81,16 +79,12 @@ HEALTH_COLUMNS = [
 SUMMARY_COLUMNS = [
     "run_name", "k", "prompt_dropout", "weight_decay", "epochs", "lr",
     "num_beams", "no_repeat_ngram_size", "length_penalty",
-    "score_mode",
     "BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4",
     "ROUGE-L", "CIDEr", "METEOR", "SPICE", "SPIDEr",
     *HEALTH_COLUMNS,
     "predictions_path", "metrics_path",
 ]
-KEY_COLUMNS = (
-    "run_name", "num_beams", "no_repeat_ngram_size", "length_penalty",
-    "score_mode",
-)
+KEY_COLUMNS = ("run_name", "num_beams", "no_repeat_ngram_size", "length_penalty")
 
 
 def _row_key(row: dict) -> tuple:
@@ -115,7 +109,7 @@ def upsert_summary(csv_path: Path, row: dict) -> None:
 
 def _summary_row(
     *, run_name_str: str, k: int, pd: float, wd: float, ep: float, lr: float,
-    nb: int, nrn: int, lp: float, score_mode: str,
+    nb: int, nrn: int, lp: float,
     metrics_path: Path, predictions_path: Path,
 ) -> dict:
     metrics = json.loads(metrics_path.read_text())
@@ -125,7 +119,6 @@ def _summary_row(
         "epochs": _fmt(ep), "lr": _fmt(lr),
         "num_beams": _fmt(nb), "no_repeat_ngram_size": _fmt(nrn),
         "length_penalty": _fmt(lp),
-        "score_mode": score_mode,
         "predictions_path": str(predictions_path),
         "metrics_path": str(metrics_path),
     }
@@ -243,12 +236,13 @@ def stage_eval(
 
 
 def stage_score(
-    *, run_dir: Path, pred_path: Path, skip_java: bool,
-    nb: int, nrn: int, lp: float,  # Add these arguments
+    *, run_dir: Path, pred_path: Path,
+    nb: int, nrn: int, lp: float,
     skip_existing: bool, dry_run: bool,
-    train_csv: Optional[str] = None, skip_spice: bool = False,
+    train_csv: Optional[str] = None,
+    skip_meteor: bool = False, skip_spice: bool = False,
 ) -> Path:
-    out_path = run_dir / "metrics" / metrics_name(skip_java, nb, nrn, lp)
+    out_path = run_dir / "metrics" / metrics_name(nb, nrn, lp)
     if skip_existing and out_path.exists():
         print(f"[skip score] {run_dir.name}/{out_path.name} (exists)")
         return out_path
@@ -258,8 +252,8 @@ def stage_score(
         "--predictions", str(pred_path),
         "--output", str(out_path),
     ]
-    if skip_java:
-        cmd.append("--skip_java")
+    if skip_meteor:
+        cmd.append("--skip_meteor")
     if skip_spice:
         cmd.append("--skip_spice")
     if train_csv:
@@ -311,10 +305,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--length_penalties", type=float, nargs="+", default=[0.0])
 
     # Score sweep
-    p.add_argument("--score_skip_java", action="store_true",
-                   help="Produce metrics_skip_java.json (no METEOR/SPICE).")
-    p.add_argument("--score_with_java", action="store_true",
-                   help="Produce metrics_with_java.json (full metric set).")
+    # Scoring always PTB-tokenizes (needs Java) and computes the full metric
+    # set unless one of these is passed.
+    p.add_argument("--score_skip_meteor", action="store_true",
+                   help="Pass --skip_meteor to score_predictions.py.")
     p.add_argument("--score_skip_spice", action="store_true",
                    help="Pass --skip_spice to score_predictions.py (SPICE is slow).")
 
@@ -339,11 +333,6 @@ def parse_args() -> argparse.Namespace:
 def _validate(args) -> None:
     if (args.val_csv is None) ^ (args.val_hdf5 is None):
         raise SystemExit("Provide both --val_csv and --val_hdf5, or neither.")
-    if "score" in args.stages and not (args.score_skip_java or args.score_with_java):
-        raise SystemExit(
-            "Stage 'score' requested but neither --score_skip_java nor "
-            "--score_with_java was set; nothing to do."
-        )
     rdir = Path(args.retrieval_cache_dir)
     splits = ["train", "test"] + (["val"] if args.val_csv else [])
     missing = [
@@ -375,16 +364,7 @@ def main() -> None:
     if len(eval_combos) < n_requested:
         print(f"[sweep] Skipping {n_requested - len(eval_combos)} greedy eval configs that only "
               f"differ in length_penalty (it has no effect when num_beams=1).")
-    score_modes: list[bool] = []
-    if args.score_skip_java:
-        score_modes.append(True)
-    if args.score_with_java:
-        score_modes.append(False)
-
-    print(
-        f"[sweep] {len(train_combos)} train configs × {len(eval_combos)} eval "
-        f"configs × {len(score_modes)} score modes"
-    )
+    print(f"[sweep] {len(train_combos)} train configs × {len(eval_combos)} eval configs")
 
     summary_csv = runs_dir / "summary.csv"
 
@@ -425,24 +405,22 @@ def main() -> None:
                     print(f"[skip score] {pred_path.name} not found "
                           "(run eval stage first)")
                     continue
-                for skip_java in score_modes:
-                    metrics_path = stage_score(
-                        run_dir=rd, pred_path=pred_path, skip_java=skip_java,
-                        nb=nb, nrn=nrn, lp=lp,  # Pass the arguments here
-                        skip_existing=args.skip_existing, dry_run=args.dry_run,
-                        train_csv=args.train_csv, skip_spice=args.score_skip_spice,
-                    )
-                    if args.dry_run or not metrics_path.exists():
-                        continue
-                    row = _summary_row(
-                        run_name_str=rname, k=k, pd=pd, wd=wd, ep=ep, lr=lr,
-                        nb=nb, nrn=nrn, lp=lp,
-                        score_mode="skip_java" if skip_java else "with_java",
-                        metrics_path=metrics_path,
-                        predictions_path=pred_path,
-                    )
-                    upsert_summary(summary_csv, row)
-                    print(f"[summary] updated {summary_csv}")
+                metrics_path = stage_score(
+                    run_dir=rd, pred_path=pred_path, nb=nb, nrn=nrn, lp=lp,
+                    skip_existing=args.skip_existing, dry_run=args.dry_run,
+                    train_csv=args.train_csv,
+                    skip_meteor=args.score_skip_meteor, skip_spice=args.score_skip_spice,
+                )
+                if args.dry_run or not metrics_path.exists():
+                    continue
+                row = _summary_row(
+                    run_name_str=rname, k=k, pd=pd, wd=wd, ep=ep, lr=lr,
+                    nb=nb, nrn=nrn, lp=lp,
+                    metrics_path=metrics_path,
+                    predictions_path=pred_path,
+                )
+                upsert_summary(summary_csv, row)
+                print(f"[summary] updated {summary_csv}")
 
 
 if __name__ == "__main__":

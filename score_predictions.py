@@ -103,9 +103,8 @@ def main() -> None:
                         help="Path to predictions JSON from evaluate.py")
     parser.add_argument("--output", type=str, default=None,
                         help="Optional path to write a metrics JSON.")
-    parser.add_argument("--skip_java", action="store_true",
-                        help="Skip METEOR and SPICE (Java-based) to prevent hangs/errors. "
-                             "PTB tokenization still runs (it is fast).")
+    parser.add_argument("--skip_meteor", action="store_true",
+                        help="Skip METEOR. PTB tokenization still needs Java.")
     parser.add_argument("--skip_spice", action="store_true",
                         help="Skip SPICE (and therefore SPIDEr); SPICE is slow and "
                              "memory-hungry.")
@@ -181,8 +180,8 @@ def main() -> None:
     except Exception:
         pass
     else:
-        if args.skip_java:
-            print("[INFO] METEOR: skipped via --skip_java.")
+        if args.skip_meteor:
+            print("[INFO] METEOR: skipped via --skip_meteor.")
             ok = False
         else:
             m, ok = _safe_score("METEOR", Meteor, gts, res, java_required=True)
@@ -196,8 +195,8 @@ def main() -> None:
     except Exception:
         pass
     else:
-        if args.skip_java or args.skip_spice:
-            print("[INFO] SPICE: skipped via --skip_java/--skip_spice.")
+        if args.skip_spice:
+            print("[INFO] SPICE: skipped via --skip_spice.")
             ok = False
         else:
             s, ok = _safe_score("SPICE", Spice, gts, res, java_required=True)
