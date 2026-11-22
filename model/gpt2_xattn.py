@@ -219,10 +219,18 @@ class ThisGPT2Model(GPT2Model):
             if batch_size <= 0:
                 raise ValueError("batch_size has to be defined and > 0")
             attention_mask = attention_mask.view(batch_size, -1)
-            # [B, 1, 1, T_to] for broadcasting over heads / from-positions
-            attention_mask = attention_mask[:, None, None, :]
-            attention_mask = attention_mask.to(dtype=self.dtype)
-            attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+            # Build a full [B, 1, T_q, T_kv] mask that is causal AND masks padding.
+            # A padding-only [B, 1, 1, T] mask is only safe with eager
+            # GPT2Attention, which applies the causal mask itself.
+            # GPT2SdpaAttention (the default from transformers 4.42) disables
+            # causal masking whenever a mask is passed, so a padding-only mask
+            # would let every position attend to future tokens (including its
+            # own label) during teacher-forced training.
+            q_len = input_shape[-1]
+            kv_len = past_length + q_len
+            causal = torch.ones(q_len, kv_len, dtype=torch.bool, device=device).tril(diagonal=past_length)
+            keep = causal[None, None, :, :] & attention_mask[:, None, None, :].bool()
+            attention_mask = (~keep).to(dtype=self.dtype) * torch.finfo(self.dtype).min
 
         # Cross-attention mask
         if self.config.add_cross_attention and encoder_hidden_states is not None:
