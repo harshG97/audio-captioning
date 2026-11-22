@@ -29,6 +29,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor, ClapModel
 
 from data.access_id import DATASETS, build_access_id_column
+from data.clap_inputs import clap_inputs_per_clip
 from model.device import best_device
 
 TARGET_SR = 48000
@@ -49,9 +50,9 @@ def _load_audio(path: str) -> np.ndarray:
 
 
 def _encode_batch(model, processor, waves, device) -> np.ndarray:
-    # No `padding` argument: use the extractor's configured "repeatpad", as in
-    # data/audio_preprocess.py. padding=True would zero-pad short clips instead.
-    inputs = processor(audios=waves, sampling_rate=TARGET_SR, return_tensors="pt")
+    # One clip per extractor call (deterministic `is_longer`, see data/clap_inputs.py),
+    # no `padding` argument so the configured "repeatpad" is used.
+    inputs = clap_inputs_per_clip(processor, waves, sampling_rate=TARGET_SR)
     inputs = {k: v.to(device) for k, v in inputs.items()}
     embeds = model.get_audio_features(**inputs)
     return embeds.detach().cpu().numpy().astype(np.float32)

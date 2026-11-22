@@ -37,6 +37,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from data.clap_inputs import clap_inputs_per_clip
 from model.device import best_device
  
  
@@ -169,16 +170,10 @@ def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=
                 else:
                     waveforms = [load_audio(fp)[0] for fp in file_paths]
 
-                # Process batch through the CLAP feature extractor. Leave
-                # `padding` unset: the extractor then uses its configured
-                # "repeatpad" (repeat short clips, then zero-pad the rest) and
-                # still returns fixed-size features, so batching works.
-                # padding=True silently switched to plain zero-padding.
-                inputs = processor(
-                    audios=waveforms,
-                    sampling_rate=48000,
-                    return_tensors="pt",
-                )
+                # CLAP feature extraction, one clip at a time (see data/clap_inputs.py:
+                # batched calls set `is_longer` on a random clip). `padding` is left
+                # unset so the extractor uses its configured "repeatpad".
+                inputs = clap_inputs_per_clip(processor, waveforms, sampling_rate=48000)
                 inputs = {k: v.to(device) for k, v in inputs.items()}
 
                 with torch.no_grad():
