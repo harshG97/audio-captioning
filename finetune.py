@@ -112,8 +112,8 @@ def parse_args() -> argparse.Namespace:
 
 def _xattn_weight_norm(model) -> float:
     """L2 norm of the first decoder block's cross-attn output projection.
-    Trained checkpoints have non-zero values; fresh-init has c_proj=0
-    (see commit 1315b32). Used as a sanity check that weights loaded."""
+    Trained checkpoints have non-zero values; a fresh model built with
+    --xattn_zero_init has c_proj=0. Used as a sanity check that weights loaded."""
     block = model.decoder.transformer.h[0]
     return float(block.crossattention.c_proj.weight.detach().norm().item())
 

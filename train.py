@@ -55,6 +55,11 @@ def parse_args() -> argparse.Namespace:
         "--train_decoder", action="store_true",
         help="Fine-tune the entire GPT-2 decoder. Default: train cross-attention "
              "sublayers + ln_cross_attn only.")
+    p.add_argument(
+        "--xattn_zero_init", action="store_true",
+        help="Zero the cross-attention output projections after loading so the "
+             "decoder starts identical to plain GPT-2. Default: random init, as "
+             "in the RECAP paper.")
 
     # Retrieval metadata recorded onto the saved checkpoint config so reloads
     # remember how it was trained. Strict: required when --rag is set.
@@ -130,6 +135,7 @@ def main() -> None:
         cross_attention_reduce_factor=args.cross_attention_reduce_factor,
         freeze_encoder=True,
         train_decoder=args.train_decoder,
+        xattn_zero_init=args.xattn_zero_init,
     )
 
     # Record retrieval metadata onto the config so the checkpoint remembers it.

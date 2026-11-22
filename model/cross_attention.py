@@ -62,16 +62,11 @@ class CrossAttention(GPT2Attention):
         self.q_attn = Conv1D(int(embed_dim / r), embed_dim)
 
         # Output projection: maps reduced head outputs back to embed_dim.
-        # Zero-init both weight and bias so cross-attention initially adds 0
-        # to the residual stream — it acts as a no-op at step 0 and only
-        # contributes once training has had a chance to learn useful audio
-        # conditioning. Random init causes the decoder to learn to attenuate
-        # cross-attn output before it can become useful, which (combined with
-        # an informative retrieval prompt) leads to the decoder ignoring audio
-        # entirely. See scripts/ablate_audio.py.
+        # Initialised like every other GPT-2 weight (post_init/from_pretrained
+        # re-run _init_weights over these layers, so any init done here would
+        # be overwritten). To start cross-attention as a no-op, use
+        # model.build_recap.zero_init_cross_attention() after loading.
         self.c_proj = Conv1D(embed_dim, int(embed_dim / r))
-        nn.init.zeros_(self.c_proj.weight)
-        nn.init.zeros_(self.c_proj.bias)
 
     def forward(
         self,

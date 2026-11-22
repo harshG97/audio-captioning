@@ -7,6 +7,10 @@ The decoder_start_token_id and pad_token_id are written onto both the
 parent RECAPConfig (used by RECAP.forward / shift_tokens_right) and the
 decoder config (used by GPT-2's generation utilities).
 
+Cross-attention layers are randomly initialised by default (as in the RECAP
+paper). Pass xattn_zero_init=True to zero their output projections after
+loading, so the decoder starts out identical to plain GPT-2.
+
 Default trainable scope: cross-attention sublayers + ln_cross_attn only
 (the rest of the GPT-2 decoder is frozen). Pass train_decoder=True to
 fine-tune the full decoder.
@@ -16,6 +20,7 @@ Public helpers:
   - load_recap_checkpoint: reload a saved RECAP + tokenizer from disk.
   - wire_special_tokens:  set pad/eos/bos IDs on tokenizer + model configs.
   - apply_freeze_policy:  toggle requires_grad on encoder / decoder params.
+  - zero_init_cross_attention: zero every cross-attention output projection.
   - build_param_groups:   AdamW param groups with separate LRs for the
                           cross-attention sublayers and the GPT-2 backbone.
 """
@@ -24,8 +29,11 @@ from __future__ import annotations
 
 from typing import List, Tuple
 
+import torch
+from torch import nn
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
+from model.cross_attention import CrossAttention
 from model.gpt2_xattn import ThisGPT2Config, ThisGPT2LMHeadModel
 from model.recap import RECAP, RECAPConfig
 
@@ -92,6 +100,24 @@ def wire_special_tokens(model: RECAP, tokenizer: PreTrainedTokenizerBase) -> Non
     model.decoder.config.pad_token_id = tokenizer.pad_token_id
     model.decoder.config.bos_token_id = None
     model.decoder.config.eos_token_id = tokenizer.eos_token_id
+
+
+def zero_init_cross_attention(model: nn.Module) -> int:
+    """Zero the output projection (weight and bias) of every CrossAttention
+    layer in `model`, so cross-attention adds nothing to the residual stream
+    until training moves c_proj away from zero.
+
+    Must be called AFTER weights are loaded: post_init() and from_pretrained()
+    re-initialise these layers. Only use it on freshly built models, never on
+    a trained checkpoint. Returns the number of layers zeroed."""
+    n = 0
+    with torch.no_grad():
+        for module in model.modules():
+            if isinstance(module, CrossAttention):
+                module.c_proj.weight.zero_()
+                module.c_proj.bias.zero_()
+                n += 1
+    return n
 
 
 def apply_freeze_policy(
@@ -194,6 +220,7 @@ def build_recap(
     cross_attention_reduce_factor: int = 1,
     freeze_encoder: bool = True,
     train_decoder: bool = False,
+    xattn_zero_init: bool = False,
 ) -> Tuple[RECAP, PreTrainedTokenizerBase]:
     _register_auto_classes_once()
 
@@ -204,6 +231,10 @@ def build_recap(
         decoder_pretrained_model_name_or_path=decoder_name,
         cross_attention_reduce_factor=cross_attention_reduce_factor,
     )
+
+    if xattn_zero_init:
+        n = zero_init_cross_attention(model)
+        print(f"[build_recap] Zero-initialised c_proj in {n} cross-attention layers")
 
     wire_special_tokens(model, tokenizer)
     apply_freeze_policy(model, freeze_encoder=freeze_encoder, train_decoder=train_decoder)
