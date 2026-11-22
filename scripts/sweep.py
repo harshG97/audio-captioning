@@ -288,9 +288,10 @@ def parse_args() -> argparse.Namespace:
                    help="Maximum number of checkpoints to keep. Deletes older ones.")
 
     # Eval sweep
-    p.add_argument("--num_beams", type=int, nargs="+", default=[1])
+    # Defaults match evaluate.py (RECAP reference decoding).
+    p.add_argument("--num_beams", type=int, nargs="+", default=[3])
     p.add_argument("--no_repeat_ngram_sizes", type=int, nargs="+", default=[0])
-    p.add_argument("--length_penalties", type=float, nargs="+", default=[1.0])
+    p.add_argument("--length_penalties", type=float, nargs="+", default=[0.0])
 
     # Score sweep
     p.add_argument("--score_skip_java", action="store_true",

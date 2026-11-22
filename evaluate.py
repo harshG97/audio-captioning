@@ -7,7 +7,9 @@ retrieval cache built against a *train-only* datastore (see
 retrieval/build_retrieval_cache.py). Self-exclusion is irrelevant here
 because val/test access_ids do not appear in the training datastore.
 
-Generation: greedy by default; beam search if --num_beams > 1.
+Generation defaults follow the RECAP reference inference (infer.py):
+beam search with 3 beams, up to 60 new tokens, length_penalty 0, no n-gram
+blocking. Pass --num_beams 1 for greedy decoding.
 """
 
 from __future__ import annotations
@@ -40,14 +42,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--retrieval_cache", type=str, required=True)
     p.add_argument("--dataset", type=str, default="audiocaps", choices=DATASETS)
     p.add_argument("--output_path", type=str, required=True)
-    p.add_argument("--max_new_tokens", type=int, default=40)
-    p.add_argument("--num_beams", type=int, default=1)
+    p.add_argument("--max_new_tokens", type=int, default=60)
+    p.add_argument("--num_beams", type=int, default=3, help="1 = greedy. Default: 3.")
     p.add_argument("--max_prompt_length", type=int, default=126,
                    help="Prompts longer than this are trimmed from the left. 126 matches the "
                         "prompt budget train.py gets with its default --max_length 128.")
-    p.add_argument("--length_penalty", type=float, default=1.0,
-                   help="Beam-search length normalization exponent. score / n**alpha. "
-                        "1.0 = pure mean log-prob (default); <1 favors shorter, >1 favors longer.")
+    p.add_argument("--length_penalty", type=float, default=0.0,
+                   help="Beam-search length normalization exponent: score / n**alpha. "
+                        "0.0 = summed log-prob (default, as in the RECAP reference code); "
+                        "1.0 = mean log-prob; >1 favors longer. Ignored when --num_beams 1.")
     p.add_argument("--no_repeat_ngram_size", type=int, default=0,
                    help="Forbid generating n-grams of this size that already appeared in the "
                         "generated suffix. 0 disables blocking (default).")
