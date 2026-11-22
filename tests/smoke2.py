@@ -42,12 +42,11 @@ def test_prompt_builder() -> None:
     # Single caption
     p1 = build_prompt(["a dog barks"])
     assert "a dog barks" in p1
-    assert p1.endswith("This audio sounds like:")
+    assert p1.endswith(BASELINE_PROMPT)
 
-    # Multiple captions – comma-separated
+    # Multiple captions – blank-line separated (RECAP reference template)
     p2 = build_prompt(["cap1", "cap2", "cap3"])
-    assert "cap1, cap2, cap3" in p2
-    assert p2.endswith("This audio sounds like:")
+    assert p2 == "Similar audios sound like\n\ncap1\n\ncap2\n\ncap3\n\nThis audio sounds like"
 
     print("[PASS] #9 prompt builder")
 
@@ -207,7 +206,8 @@ def test_greedy_generation(model, tokenizer) -> None:
     encoder_hidden = torch.randn(1, 64, 768)
 
     # Build a short prompt
-    prompt = "This audio sounds like:"
+    from retrieval.prompt_builder import BASELINE_PROMPT
+    prompt = BASELINE_PROMPT
     prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
 
     with torch.no_grad():

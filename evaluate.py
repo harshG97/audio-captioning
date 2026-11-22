@@ -29,7 +29,7 @@ from data.access_id import DATASETS, build_access_id_column
 from data.caption_filter import warn_if_cache_has_placeholders
 from model.device import best_device
 from model.recap import RECAP
-from retrieval.prompt_builder import build_prompt
+from retrieval.prompt_builder import GENERATION_STOP_STRINGS, build_prompt
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,7 +42,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output_path", type=str, required=True)
     p.add_argument("--max_new_tokens", type=int, default=40)
     p.add_argument("--num_beams", type=int, default=1)
-    p.add_argument("--max_prompt_length", type=int, default=96)
+    p.add_argument("--max_prompt_length", type=int, default=126,
+                   help="Prompts longer than this are trimmed from the left. 126 matches the "
+                        "prompt budget train.py gets with its default --max_length 128.")
     p.add_argument("--length_penalty", type=float, default=1.0,
                    help="Beam-search length normalization exponent. score / n**alpha. "
                         "1.0 = pure mean log-prob (default); <1 favors shorter, >1 favors longer.")
@@ -212,7 +214,7 @@ def main() -> None:
             pred_raw = pred_raw.lower() 
             
             # Clean the string using the same list you passed to generate
-            processed_pred = clean_prediction(pred_raw, ["|", "\n", "\\n", "target", "similar audio", "similar audios", ".", "description:"])
+            processed_pred = clean_prediction(pred_raw, GENERATION_STOP_STRINGS)
 
             predictions[access_id] = {
                 "references": references_by_id[access_id],

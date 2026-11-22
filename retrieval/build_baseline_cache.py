@@ -4,7 +4,7 @@ build_baseline_cache.py
 Write a "no-retrieval" cache: {access_id: []} for every row in a CSV. Use
 this in place of a real retrieval cache to train and evaluate a baseline
 without retrieval. The dataset class will see empty caption lists and
-build the BASELINE_PROMPT ("This audio sounds like:") instead of the
+build the BASELINE_PROMPT ("This audio sounds like") instead of the
 RECAP prompt.
 """
 

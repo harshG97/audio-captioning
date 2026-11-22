@@ -1,23 +1,43 @@
 """
 prompt_builder.py
 
-Constructs the text prompt for GPT-2 from retrieved captions.
-Follows the exact template from the RECAP paper:
+Constructs the text prompt for GPT-2 from retrieved captions, using the
+template from the RECAP reference code (src/template.txt in
+github.com/Sreyan88/RECAP):
 
-    "Audios similar to this audio sounds like:
-     caption1, caption2, ..., captionk. This audio sounds like:"
+    Similar audios sound like
+
+    <caption 1>
+
+    <caption 2>
+    ...
+
+    This audio sounds like
+
+With no retrieved captions it falls back to BASELINE_PROMPT
+("This audio sounds like"), the reference code's no-retrieval prefix.
+
+Whitespace: the reference template ends with a trailing space and appends
+the caption without a leading one. Here the prompt has no trailing space
+and RecapDataset appends " " + caption, which gives the same text with
+GPT-2's natural tokenization (" like", " a", ...) instead of a lone space
+token before the caption.
 """
 
+RETRIEVAL_HEADER = "Similar audios sound like"
+CAPTION_SEPARATOR = "\n\n"
+BASELINE_PROMPT = "This audio sounds like"
+PROMPT_TEMPLATE = RETRIEVAL_HEADER + "\n\n{retrieved}\n\n" + BASELINE_PROMPT
 
-# PROMPT_TEMPLATE = (
-#     "Audios similar to this audio sounds like: {retrieved}. "
-#     "This audio sounds like:"
-# )
-PROMPT_TEMPLATE = (
-    "Similar audio descriptions: {retrieved}\n"
-    "Target audio description:"
+# Lowercase strings at which a decoded continuation is cut in evaluate.py:
+# a newline means the model has started another list item or prompt line.
+GENERATION_STOP_STRINGS = (
+    "\n",
+    "\\n",
+    RETRIEVAL_HEADER.lower(),
+    BASELINE_PROMPT.lower(),
+    ".",
 )
-BASELINE_PROMPT = "This audio sounds like:"
 
 
 def build_prompt(retrieved_captions: list[str]) -> str:
@@ -27,14 +47,14 @@ def build_prompt(retrieved_captions: list[str]) -> str:
     Args:
         retrieved_captions: list of caption strings from retriever.
             If empty, returns the no-retrieval baseline prompt
-            ("This audio sounds like:") so the same training/eval code path
+            ("This audio sounds like") so the same training/eval code path
             can be used for an ablation without retrieval.
     Returns:
         prompt string ready to feed into GPT-2 tokenizer
     """
     if not retrieved_captions:
         return BASELINE_PROMPT
-    joined = " | ".join(retrieved_captions)
+    joined = CAPTION_SEPARATOR.join(c.strip() for c in retrieved_captions)
     return PROMPT_TEMPLATE.format(retrieved=joined)
 
 
