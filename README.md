@@ -121,6 +121,13 @@ done
 Outputs: `$FEAT_DIR/audiocaps_{train,val,test}.hdf5`. All three configs
 below read from these.
 
+On a Slurm cluster, `scripts/phoenix_preprocess.sbatch` runs this step plus
+the retrieval embeddings and caches from sections 3 and 4 (empty and top-k)
+as one job. Fill in the `--account`, `--qos` and `--gres` lines at the top,
+then `mkdir -p logs && sbatch scripts/phoenix_preprocess.sbatch`. Finished
+steps leave a marker in `$FEAT_DIR/.done/`, so resubmitting after a timeout
+or preemption resumes where it stopped.
+
 ---
 
 ## 3. Config 1 — Baseline (no retrieval)
