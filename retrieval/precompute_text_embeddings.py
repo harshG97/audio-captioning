@@ -18,6 +18,9 @@ def main() -> None:
     parser.add_argument("--output_path", type=str, default="text_train.npy")
     parser.add_argument("--dataset", type=str, default="audiocaps", choices=DATASETS)
     parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--clap_model", type=str, default="laion/clap-htsat-fused",
+                        help="CLAP checkpoint (HF id or local path). Must match the "
+                             "one used by precompute_audio_embeddings.py.")
     args = parser.parse_args()
 
     csv_path = Path(args.csv_path)
@@ -32,9 +35,9 @@ def main() -> None:
 
     device = best_device()
     print(f"Using device: {device}")
-    model = ClapModel.from_pretrained("laion/clap-htsat-fused").to(device)
+    model = ClapModel.from_pretrained(args.clap_model).to(device)
     model.eval()
-    processor = AutoProcessor.from_pretrained("laion/clap-htsat-fused")
+    processor = AutoProcessor.from_pretrained(args.clap_model)
 
     captions = df["caption"].astype(str).tolist()
 
