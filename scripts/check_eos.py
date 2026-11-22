@@ -20,10 +20,17 @@ build_recap() is used (useful as a pre-training sanity check).
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 
 import torch
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer
+
+# Make repo modules importable when invoked as `python scripts/check_eos.py`.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
