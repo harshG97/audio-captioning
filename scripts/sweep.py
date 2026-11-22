@@ -138,6 +138,19 @@ def _summary_row(
     return row
 
 
+def dedupe_eval_combos(combos: list[tuple]) -> list[tuple]:
+    """Drop (num_beams, no_repeat_ngram_size, length_penalty) combos that would
+    produce identical predictions: length_penalty only affects beam search, so
+    with num_beams=1 keep a single length penalty per n-gram setting."""
+    seen, out = set(), []
+    for nb, nrn, lp in combos:
+        key = (nb, nrn, lp if nb > 1 else None)
+        if key not in seen:
+            seen.add(key)
+            out.append((nb, nrn, lp))
+    return out
+
+
 # ---------- subprocess helpers --------------------------------------------
 
 def _run(cmd: list[str], dry_run: bool) -> None:
@@ -365,6 +378,11 @@ def main() -> None:
     eval_combos = list(itertools.product(
         args.num_beams, args.no_repeat_ngram_sizes, args.length_penalties,
     ))
+    n_requested = len(eval_combos)
+    eval_combos = dedupe_eval_combos(eval_combos)
+    if len(eval_combos) < n_requested:
+        print(f"[sweep] Skipping {n_requested - len(eval_combos)} greedy eval configs that only "
+              f"differ in length_penalty (it has no effect when num_beams=1).")
     score_modes: list[bool] = []
     if args.score_skip_java:
         score_modes.append(True)
