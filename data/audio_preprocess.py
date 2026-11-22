@@ -27,7 +27,6 @@ import h5py
 import torch
 import librosa
 import pandas as pd
-import numpy as np
 from tqdm import tqdm
 from transformers import AutoProcessor, ClapAudioModel, ClapModel, PretrainedConfig
 
@@ -200,7 +199,7 @@ def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=
         sample_id = list(h5f.keys())[0]
         sample_shape = h5f[sample_id][()].shape
         print(f"Sample entry '{sample_id}': shape = {sample_shape}")
-        print(f"  Expected: (64, 768)")
+        print("  Expected: (64, 768)")
  
  
 def main():

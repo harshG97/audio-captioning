@@ -14,7 +14,6 @@ Usage:
 from typing import Optional, Tuple, Union
 
 import torch
-from torch import nn
 
 from transformers.models.gpt2.modeling_gpt2 import GPT2Attention
 from transformers.pytorch_utils import Conv1D

@@ -61,9 +61,6 @@ def pred_name(nb: int, nrn: int, lp: float) -> str:
     return f"test_preds_nb{_fmt(nb)}_nrngram{_fmt(nrn)}_lp{_fmt(lp)}.json"
 
 
-# def metrics_name(skip_java: bool) -> str:
-#     return "metrics_skip_java.json" if skip_java else "metrics_with_java.json"
-
 def metrics_name(skip_java: bool, nb: int, nrn: int, lp: float) -> str:
     base = "skip_java" if skip_java else "with_java"
     return f"metrics_{base}_nb{_fmt(nb)}_nrngram{_fmt(nrn)}_lp{_fmt(lp)}.json"
@@ -245,11 +242,6 @@ def stage_eval(
     return out_path
 
 
-# def stage_score(
-#     *, run_dir: Path, pred_path: Path, skip_java: bool,
-#     skip_existing: bool, dry_run: bool,
-# ) -> Path:
-#     out_path = run_dir / "metrics" / metrics_name(skip_java)
 def stage_score(
     *, run_dir: Path, pred_path: Path, skip_java: bool,
     nb: int, nrn: int, lp: float,  # Add these arguments
@@ -434,10 +426,6 @@ def main() -> None:
                           "(run eval stage first)")
                     continue
                 for skip_java in score_modes:
-                    # metrics_path = stage_score(
-                    #     run_dir=rd, pred_path=pred_path, skip_java=skip_java,
-                    #     skip_existing=args.skip_existing, dry_run=args.dry_run,
-                    # )
                     metrics_path = stage_score(
                         run_dir=rd, pred_path=pred_path, skip_java=skip_java,
                         nb=nb, nrn=nrn, lp=lp,  # Pass the arguments here

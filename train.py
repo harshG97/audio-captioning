@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 
-import torch
 from transformers import Trainer, TrainingArguments
 
 from data.access_id import DATASETS
