@@ -217,7 +217,7 @@ def build_param_groups(
 def build_recap(
     encoder_name: str = "laion/clap-htsat-fused",
     decoder_name: str = "gpt2",
-    cross_attention_reduce_factor: int = 1,
+    cross_attention_reduce_factor: int = ATTENTION_SIZE_TO_REDUCE_FACTOR[7.0],
     freeze_encoder: bool = True,
     train_decoder: bool = False,
     xattn_zero_init: bool = False,

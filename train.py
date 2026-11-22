@@ -39,17 +39,21 @@ def parse_args() -> argparse.Namespace:
              "cross-attention to the audio rather than copying from retrieved "
              "captions. 0.0 disables (default); 0.3-0.5 is a reasonable range.")
 
-    # Cross-attention size: pick ONE of these (or neither for default reduce_factor=1).
+    # Cross-attention size: pick ONE of these (or neither for the default,
+    # attention_size=7 / reduce_factor=4, as in the RECAP paper).
     attn = p.add_mutually_exclusive_group()
     attn.add_argument(
         "--cross_attention_reduce_factor", type=int, default=None,
         help="Bottleneck factor for cross-attention Q/K/V projections. "
-             "Higher = smaller and cheaper cross-attention. Default: 1.")
+             "Higher = smaller and cheaper cross-attention. Default: 4 "
+             "(same as --attention_size 7).")
     attn.add_argument(
         "--attention_size", type=float, default=None,
         choices=list(ATTENTION_SIZE_TO_REDUCE_FACTOR.keys()),
         help="Cross-attention parameter budget in millions; maps to a reduce factor "
-             "(28->1, 14->2, 7->4, 3.5->8, 1.75->16).")
+             "(28->1, 14->2, 7->4, 3.5->8, 1.75->16). Default: 7, which is "
+             "~7.1M trainable params with GPT-2 small, matching the RECAP paper "
+             "and its reference code.")
 
     p.add_argument(
         "--train_decoder", action="store_true",
@@ -109,7 +113,7 @@ def parse_args() -> argparse.Namespace:
     if args.attention_size is not None:
         args.cross_attention_reduce_factor = ATTENTION_SIZE_TO_REDUCE_FACTOR[args.attention_size]
     elif args.cross_attention_reduce_factor is None:
-        args.cross_attention_reduce_factor = 1
+        args.cross_attention_reduce_factor = ATTENTION_SIZE_TO_REDUCE_FACTOR[7.0]
 
     # Strict retrieval-metadata validation.
     if args.rag:
