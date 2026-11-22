@@ -20,13 +20,28 @@ of the retrieval cache JSON fed to `train.py` / `evaluate.py`.
 
 ### Environment
 
+With conda (includes Java):
+
 ```bash
 conda env create -f env.yml
 conda activate audio
 ```
 
-`torch` is installed via pip inside the env. On CUDA hardware you may want
-to reinstall against your CUDA version, e.g.:
+Or with pip in a virtualenv (`requirements.txt` has the same packages):
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+With pip, install Java separately (JDK 8 or newer; on macOS
+`brew install openjdk`). Scoring needs it for PTB tokenization, METEOR and
+SPICE, and `score_predictions.py` stops with an error if it is missing. SPICE
+also downloads Stanford CoreNLP models on its first run.
+
+Both setups pin `transformers==4.45.2`; keep it exact (see the comment in
+`env.yml`). `torch` comes from pip in both. On CUDA hardware you may want
+to reinstall it against your CUDA version, e.g.:
 
 ```bash
 pip install --upgrade --index-url https://download.pytorch.org/whl/cu121 torch

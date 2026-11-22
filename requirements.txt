@@ -1,0 +1,29 @@
+# pip / venv equivalent of env.yml (Python 3.11 to 3.13).
+#
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Not pip-installable: Java (JDK 8 or newer) is needed for scoring, which runs
+# PTB tokenization, METEOR and SPICE. On macOS: brew install openjdk.
+#
+# On a CUDA machine, install torch for your CUDA version first (see README),
+# then this file.
+
+torch>=2.1
+# Pinned exactly: attention behaviour changed inside the 4.4x series and 4.46
+# refactored GPT2Attention, which model/cross_attention.py builds on. See env.yml.
+transformers==4.45.2
+# transformers 4.45's Trainer needs accelerate >= 0.26.
+accelerate>=0.26
+
+numpy
+pandas
+scipy
+tqdm
+h5py
+librosa
+pycocoevalcap
+pytest
+
+# Only for the exploration notebook (audio_analysis.ipynb):
+# matplotlib seaborn jupyter ipykernel
