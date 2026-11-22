@@ -29,7 +29,7 @@ import librosa
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
-from transformers import ClapAudioModel, AutoProcessor
+from transformers import AutoProcessor, ClapAudioModel, ClapModel, PretrainedConfig
 
 # Make `model.device` importable when this file is invoked as a script
 # (`python data/audio_preprocess.py ...`) instead of `python -m data.audio_preprocess`.
@@ -40,6 +40,33 @@ if _REPO_ROOT not in sys.path:
 from model.device import best_device
  
  
+def load_clap_audio_encoder(name_or_path):
+    """Load CLAP's audio tower with its pretrained weights.
+
+    Hub checkpoints such as laion/clap-htsat-fused are full ClapModel
+    checkpoints, whose audio weights are stored under "audio_model.".
+    ClapAudioModel.from_pretrained() on them matches none of those keys and
+    silently returns a randomly initialised encoder, so load the full model
+    and take its audio tower instead. Raises if any audio weight is missing.
+    """
+    # Read model_type from the raw config: AutoConfig does not know "clap_audio_model".
+    model_type = PretrainedConfig.get_config_dict(name_or_path)[0].get("model_type")
+    if model_type == "clap":
+        clap, info = ClapModel.from_pretrained(name_or_path, output_loading_info=True)
+        missing = [k for k in info["missing_keys"] if k.startswith("audio_model.")]
+        encoder = clap.audio_model
+    else:  # an audio-only (ClapAudioModel) checkpoint
+        encoder, info = ClapAudioModel.from_pretrained(name_or_path, output_loading_info=True)
+        missing = list(info["missing_keys"])
+    if missing:
+        raise RuntimeError(
+            f"{len(missing)} CLAP audio-encoder weights were not found in "
+            f"{name_or_path} (e.g. {missing[:3]}); refusing to extract features "
+            f"from a partly random encoder."
+        )
+    return encoder
+
+
 def load_audio(file_path, target_sr=48000):
     """
     Load an audio file and resample to the target sample rate.
@@ -207,7 +234,7 @@ def main():
  
     # Load model and processor
     print(f"Loading CLAP model: {args.encoder_name}")
-    model = ClapAudioModel.from_pretrained(args.encoder_name).to(device)
+    model = load_clap_audio_encoder(args.encoder_name).to(device)
     processor = AutoProcessor.from_pretrained(args.encoder_name)
  
     # Build file list and verify files exist
