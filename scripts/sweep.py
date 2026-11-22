@@ -235,6 +235,31 @@ def stage_eval(
     return out_path
 
 
+def missing_metrics(
+    path: Path, *, skip_meteor: bool, skip_spice: bool, train_csv: Optional[str],
+) -> list[str]:
+    """What an existing metrics file lacks for this sweep's settings.
+
+    The file name does not say which metrics were skipped, so --skip_existing
+    must not reuse a file scored with --skip_meteor/--skip_spice, without
+    --train_csv, or with --no_tokenize when the current run wants more."""
+    try:
+        metrics = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return ["a readable JSON body"]
+    need = ["CIDEr"]
+    if not skip_meteor:
+        need.append("METEOR")
+    if not skip_spice:
+        need += ["SPICE", "SPIDEr"]
+    if train_csv:
+        need.append("train_copy_rate")
+    missing = [k for k in need if k not in metrics]
+    if metrics.get("tokenizer") != "ptb":
+        missing.append("PTB tokenization")
+    return missing
+
+
 def stage_score(
     *, run_dir: Path, pred_path: Path,
     nb: int, nrn: int, lp: float,
@@ -244,8 +269,12 @@ def stage_score(
 ) -> Path:
     out_path = run_dir / "metrics" / metrics_name(nb, nrn, lp)
     if skip_existing and out_path.exists():
-        print(f"[skip score] {run_dir.name}/{out_path.name} (exists)")
-        return out_path
+        missing = missing_metrics(out_path, skip_meteor=skip_meteor,
+                                  skip_spice=skip_spice, train_csv=train_csv)
+        if not missing:
+            print(f"[skip score] {run_dir.name}/{out_path.name} (exists)")
+            return out_path
+        print(f"[rescore] {run_dir.name}/{out_path.name} lacks {', '.join(missing)}")
 
     cmd = [
         sys.executable, "score_predictions.py",
