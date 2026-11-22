@@ -169,12 +169,15 @@ def encode_to_hdf5(file_list, model, processor, device, output_path, batch_size=
                 else:
                     waveforms = [load_audio(fp)[0] for fp in file_paths]
 
-                # Process batch through the CLAP feature extractor
+                # Process batch through the CLAP feature extractor. Leave
+                # `padding` unset: the extractor then uses its configured
+                # "repeatpad" (repeat short clips, then zero-pad the rest) and
+                # still returns fixed-size features, so batching works.
+                # padding=True silently switched to plain zero-padding.
                 inputs = processor(
                     audios=waveforms,
                     sampling_rate=48000,
                     return_tensors="pt",
-                    padding=True
                 )
                 inputs = {k: v.to(device) for k, v in inputs.items()}
 

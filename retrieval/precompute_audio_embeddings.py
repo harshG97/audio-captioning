@@ -49,9 +49,9 @@ def _load_audio(path: str) -> np.ndarray:
 
 
 def _encode_batch(model, processor, waves, device) -> np.ndarray:
-    inputs = processor(
-        audios=waves, sampling_rate=TARGET_SR, return_tensors="pt", padding=True
-    )
+    # No `padding` argument: use the extractor's configured "repeatpad", as in
+    # data/audio_preprocess.py. padding=True would zero-pad short clips instead.
+    inputs = processor(audios=waves, sampling_rate=TARGET_SR, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
     embeds = model.get_audio_features(**inputs)
     return embeds.detach().cpu().numpy().astype(np.float32)
