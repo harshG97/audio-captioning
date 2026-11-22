@@ -5,17 +5,19 @@ Run: python -m pytest tests/test_decoder_causality.py -q  (CPU, a few seconds)
 Guards against the bug where a padding-only mask switched off causal masking
 under GPT2SdpaAttention (transformers >= 4.42), letting training see future tokens.
 """
+import inspect
 import sys
 from pathlib import Path
 
 import pytest
 import torch
+from transformers.models.gpt2.modeling_gpt2 import GPT2Block
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from model.gpt2_xattn import ThisGPT2Config, ThisGPT2LMHeadModel
+from model.gpt2_xattn import ThisGPT2Block, ThisGPT2Config, ThisGPT2LMHeadModel
 
 V, H, T, S = 100, 64, 12, 8
 
@@ -82,3 +84,18 @@ def test_kv_cache_with_mask_matches_full_pass(impl):
         step = m(input_ids=ids[:, -1:], attention_mask=full_mask, past_key_values=pre.past_key_values,
                  encoder_hidden_states=enc, use_cache=True).logits[0, -1]
     assert torch.allclose(full, step, atol=1e-5)
+
+
+def test_block_signature_matches_stock_block():
+    """The stock GPT2Model.forward drives ThisGPT2Block, so the two must take the
+    same arguments. If a transformers upgrade changes GPT2Block.forward, this
+    fails before the KV cache or masks can go silently wrong."""
+    ours = list(inspect.signature(ThisGPT2Block.forward).parameters)
+    stock = list(inspect.signature(GPT2Block.forward).parameters)
+    assert ours == stock, f"ThisGPT2Block.forward{ours} != GPT2Block.forward{stock}"
+
+
+def test_block_rejects_unknown_arguments():
+    blk = make("eager").transformer.h[0]
+    with pytest.raises(TypeError):
+        blk(torch.randn(1, 3, H), past_key_value=None)

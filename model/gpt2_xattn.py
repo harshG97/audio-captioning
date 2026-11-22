@@ -51,11 +51,8 @@ from transformers.models.gpt2.modeling_gpt2 import (
     GPT2Model,
 )
 from transformers.models.gpt2.configuration_gpt2 import GPT2Config
-from transformers.utils import logging
 
 from .cross_attention import CrossAttention
-
-logger = logging.get_logger(__name__)
 
 class ThisGPT2Config(GPT2Config):
     model_type = "this_gpt2"
@@ -87,8 +84,12 @@ class ThisGPT2Block(GPT2Block):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         use_cache: Optional[bool] = False,
         output_attentions: Optional[bool] = False,
-        **kwargs,                                  # absorb cache_position etc. from newer HF
     ) -> Tuple[torch.Tensor, ...]:
+        # Same signature as GPT2Block.forward in the pinned transformers, with
+        # no **kwargs: the stock GPT2Model.forward calls this block, and if a
+        # newer version passed arguments under new names (for example the KV
+        # cache), swallowing them would silently break generation. An unknown
+        # argument now raises a TypeError instead.
 
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
