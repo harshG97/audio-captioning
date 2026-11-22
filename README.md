@@ -59,22 +59,13 @@ python -m pytest tests -q
 They cover the decoder's causal masking (`tests/test_decoder_causality.py`),
 CLAP encoder loading and input preparation, caption filtering, the prompt
 template, cross-attention initialisation and the generation-health metrics.
-Run them after any change to `transformers`: the decoder masking depends on
-GPT-2 internals that changed within the 4.4x series.
-
-### Smoke test
-
-Before launching anything heavy:
-
-```bash
-python -m tests.smoke
-python -m tests.smoke2
-```
-
-These exercise dataset alignment, the forward path with cached
-`encoder_outputs`, a training step, generation and save/load. The
-model-touching ones download GPT-2 (~500 MB) and CLAP-HTSAT-Fused (~1.5 GB)
-to the HF cache on first run.
+`tests/test_pipeline.py` runs the whole path on tiny models built in the
+test: dataset prompt masking and label shift, collation, a training step
+(only cross-attention moves), save/load, and greedy generation checked
+against a cache-free argmax loop. Nothing is downloaded, so run the suite
+before launching anything heavy and after any change to `transformers`:
+the decoder masking depends on GPT-2 internals that changed within the
+4.4x series.
 
 ### Rebuilding artifacts from earlier runs
 
