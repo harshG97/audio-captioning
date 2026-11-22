@@ -75,12 +75,19 @@ def cache_path(retrieval_cache_dir: Path, k: int, split: str) -> Path:
 
 # ---------- rolling summary CSV -------------------------------------------
 
+# Generation-health rates written by score_predictions.py.
+HEALTH_COLUMNS = [
+    "unique_rate", "empty_rate", "mean_words", "eos_stop_rate",
+    "max_tokens_rate", "postprocess_cut_rate", "train_copy_rate",
+]
+
 SUMMARY_COLUMNS = [
     "run_name", "k", "prompt_dropout", "weight_decay", "epochs", "lr",
     "num_beams", "no_repeat_ngram_size", "length_penalty",
     "score_mode",
     "BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4",
     "ROUGE-L", "CIDEr", "METEOR", "SPICE", "SPIDEr",
+    *HEALTH_COLUMNS,
     "predictions_path", "metrics_path",
 ]
 KEY_COLUMNS = (
@@ -126,7 +133,7 @@ def _summary_row(
         "metrics_path": str(metrics_path),
     }
     for m in ("BLEU-1", "BLEU-2", "BLEU-3", "BLEU-4",
-              "ROUGE-L", "CIDEr", "METEOR", "SPICE", "SPIDEr"):
+              "ROUGE-L", "CIDEr", "METEOR", "SPICE", "SPIDEr", *HEALTH_COLUMNS):
         row[m] = metrics.get(m, "")
     return row
 
@@ -234,6 +241,7 @@ def stage_score(
     *, run_dir: Path, pred_path: Path, skip_java: bool,
     nb: int, nrn: int, lp: float,  # Add these arguments
     skip_existing: bool, dry_run: bool,
+    train_csv: Optional[str] = None, skip_spice: bool = False,
 ) -> Path:
     out_path = run_dir / "metrics" / metrics_name(skip_java, nb, nrn, lp)
     if skip_existing and out_path.exists():
@@ -247,6 +255,10 @@ def stage_score(
     ]
     if skip_java:
         cmd.append("--skip_java")
+    if skip_spice:
+        cmd.append("--skip_spice")
+    if train_csv:
+        cmd += ["--train_csv", train_csv]   # enables train_copy_rate
     _run(cmd, dry_run)
     return out_path
 
@@ -298,6 +310,8 @@ def parse_args() -> argparse.Namespace:
                    help="Produce metrics_skip_java.json (no METEOR/SPICE).")
     p.add_argument("--score_with_java", action="store_true",
                    help="Produce metrics_with_java.json (full metric set).")
+    p.add_argument("--score_skip_spice", action="store_true",
+                   help="Pass --skip_spice to score_predictions.py (SPICE is slow).")
 
     # Stage selection / control
     p.add_argument("--stages", type=str, nargs="+",
@@ -410,6 +424,7 @@ def main() -> None:
                         run_dir=rd, pred_path=pred_path, skip_java=skip_java,
                         nb=nb, nrn=nrn, lp=lp,  # Pass the arguments here
                         skip_existing=args.skip_existing, dry_run=args.dry_run,
+                        train_csv=args.train_csv, skip_spice=args.score_skip_spice,
                     )
                     if args.dry_run or not metrics_path.exists():
                         continue

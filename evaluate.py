@@ -123,7 +123,11 @@ def generate_caption(
     device: torch.device,
     length_penalty: float = 1.0,
     no_repeat_ngram_size: int = 0,
-) -> str:
+    return_stop_reason: bool = False,
+):
+    """Generate one caption. Returns the decoded text, or (text, stop_reason)
+    when return_stop_reason=True, where stop_reason is "eos" (the model ended
+    the caption itself) or "max_new_tokens" (it ran into the token limit)."""
     encoder_outputs = BaseModelOutput(last_hidden_state=encoder_hidden.to(device))
     decoder_input_ids = torch.tensor(
         [[decoder_start_id, *prompt_ids]], dtype=torch.long, device=device
@@ -152,9 +156,12 @@ def generate_caption(
     )
 
     gen_ids = out[0, suffix_start:].tolist()
+    stop_reason = "max_new_tokens"
     if gen_ids and gen_ids[-1] == eos_id:
         gen_ids = gen_ids[:-1]
-    return tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+        stop_reason = "eos"
+    text = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+    return (text, stop_reason) if return_stop_reason else text
 
 
 def main() -> None:
@@ -200,7 +207,7 @@ def main() -> None:
             feats = np.asarray(h5f[access_id][()], dtype=np.float32)
             encoder_hidden = torch.from_numpy(feats).unsqueeze(0)
 
-            pred_raw = generate_caption(
+            pred_raw, stop_reason = generate_caption(
                 model=model,
                 tokenizer=tokenizer,
                 encoder_hidden=encoder_hidden,
@@ -212,17 +219,20 @@ def main() -> None:
                 device=device,
                 length_penalty=args.length_penalty,
                 no_repeat_ngram_size=args.no_repeat_ngram_size,
+                return_stop_reason=True,
             )
-            pred_raw = pred_raw.strip()
-            pred_raw = pred_raw.lower() 
-            
-            # Clean the string using the same list you passed to generate
+            pred_raw = pred_raw.strip().lower()
+
+            # Cut the continuation at the first stop string (newline, prompt echo, ".").
             processed_pred = clean_prediction(pred_raw, GENERATION_STOP_STRINGS)
 
             predictions[access_id] = {
                 "references": references_by_id[access_id],
                 "prediction": processed_pred,
                 "raw_prediction": pred_raw,
+                # Diagnostics read by score_predictions.py (generation health).
+                "stop_reason": stop_reason,
+                "cut_by_postprocessing": processed_pred != pred_raw,
             }
 
     out = Path(args.output_path)
