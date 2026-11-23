@@ -9,8 +9,13 @@ Encoder is frozen and we feed cached encoder hidden states directly via
 from __future__ import annotations
 
 import argparse
+import contextlib
+import os
 
-from transformers import Trainer, TrainingArguments
+import numpy as np
+import torch
+from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
+from transformers.trainer_utils import get_last_checkpoint
 
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
@@ -106,7 +111,24 @@ def parse_args() -> argparse.Namespace:
         help="At end of training, reload the checkpoint with the lowest "
              "eval_loss instead of keeping the last training step. Requires "
              "a validation set (--val_csv/--val_hdf5/--val_retrieval_cache).")
+    p.add_argument(
+        "--eval_save_strategy", choices=["steps", "epoch"], default="steps",
+        help="When to evaluate and save checkpoints: every --eval_steps / "
+             "--save_steps steps (default), or once per epoch.")
+    p.add_argument(
+        "--early_stopping_patience", type=int, default=0,
+        help="Stop after this many evaluations without a lower eval_loss. "
+             "0 disables (default). Needs --load_best_model_at_end.")
+    p.add_argument(
+        "--resume", action="store_true",
+        help="If --output_dir already holds checkpoint-* folders, continue "
+             "from the latest one (optimizer, scheduler, RNG and step count "
+             "included). Otherwise start fresh. Safe to pass on every launch, "
+             "so a resubmitted job picks up where it stopped.")
     args = p.parse_args()
+
+    if args.early_stopping_patience > 0 and not args.load_best_model_at_end:
+        p.error("--early_stopping_patience needs --load_best_model_at_end")
 
     # Resolve attention-size flags.
     if args.attention_size is not None:
@@ -127,6 +149,24 @@ def parse_args() -> argparse.Namespace:
             p.error("--rag is set; the following are required: " + ", ".join(missing))
 
     return args
+
+
+def checkpoint_safe_globals() -> list:
+    """numpy types that transformers 4.45 pickles into checkpoint rng_state.pth.
+
+    torch >= 2.6 loads checkpoints with weights_only=True by default and refuses
+    these, so resuming fails with an UnpicklingError. Allowlisting exactly these
+    types (only while resuming from our own checkpoints) keeps the safe loader.
+    """
+    core = getattr(np, "_core", None) or np.core
+    return [core.multiarray._reconstruct, np.ndarray, np.dtype, np.dtypes.UInt32DType]
+
+
+def resume_checkpoint(output_dir: str) -> str | None:
+    """Latest checkpoint-* folder in output_dir, or None to start fresh."""
+    if not os.path.isdir(output_dir):
+        return None
+    return get_last_checkpoint(output_dir)
 
 
 def main() -> None:
@@ -192,8 +232,8 @@ def main() -> None:
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
         eval_steps=args.eval_steps if eval_ds is not None else None,
-        evaluation_strategy="steps" if eval_ds is not None else "no",
-        save_strategy="steps",
+        evaluation_strategy=args.eval_save_strategy if eval_ds is not None else "no",
+        save_strategy=args.eval_save_strategy,
         load_best_model_at_end=args.load_best_model_at_end,
         metric_for_best_model="eval_loss" if args.load_best_model_at_end else None,
         greater_is_better=False if args.load_best_model_at_end else None,
@@ -215,9 +255,23 @@ def main() -> None:
         eval_dataset=eval_ds,
         data_collator=collator,
         tokenizer=tokenizer,
+        callbacks=(
+            [EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)]
+            if args.early_stopping_patience > 0 else None
+        ),
     )
 
-    trainer.train()
+    resume_from = resume_checkpoint(args.output_dir) if args.resume else None
+    if resume_from:
+        print(f"[resume] continuing from {resume_from}")
+        safe = getattr(torch.serialization, "safe_globals", None)
+        ctx = safe(checkpoint_safe_globals()) if safe else contextlib.nullcontext()
+        with ctx:
+            trainer.train(resume_from_checkpoint=resume_from)
+    else:
+        if args.resume:
+            print(f"[resume] no checkpoint in {args.output_dir}; starting fresh")
+        trainer.train()
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
 
