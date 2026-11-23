@@ -73,3 +73,15 @@ def test_new_options_default_to_old_behaviour(monkeypatch):
     monkeypatch.setattr(sys, "argv", REQUIRED)
     args = train.parse_args()
     assert (args.eval_save_strategy, args.early_stopping_patience, args.resume) == ("steps", 0, False)
+
+
+def test_write_history(tmp_path):
+    log = [{"loss": 3.2, "learning_rate": 5e-5, "grad_norm": 1.1, "epoch": 0.5, "step": 50},
+           {"eval_loss": 2.9, "eval_runtime": 4.2, "epoch": 1.0, "step": 100},
+           {"train_runtime": 99.0, "train_loss": 3.0, "epoch": 1.0, "step": 100}]
+    path = tmp_path / "history.csv"
+    assert train.write_history(log, str(path)) == 2
+    lines = path.read_text().splitlines()
+    assert lines[0] == ",".join(train.HISTORY_FIELDS)
+    assert lines[1] == "50,0.5,3.2,,5e-05,1.1"
+    assert lines[2] == "100,1.0,,2.9,,"

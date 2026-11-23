@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
 import os
 
 import numpy as np
@@ -169,6 +170,21 @@ def resume_checkpoint(output_dir: str) -> str | None:
     return get_last_checkpoint(output_dir)
 
 
+HISTORY_FIELDS = ["step", "epoch", "loss", "eval_loss", "learning_rate", "grad_norm"]
+
+
+def write_history(log_history: list[dict], path: str) -> int:
+    """Write the Trainer's log history as a CSV, one row per logging step
+    (training loss) or evaluation (eval_loss), for plotting loss curves.
+    Returns the number of rows written."""
+    rows = [e for e in log_history if "loss" in e or "eval_loss" in e]
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    return len(rows)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -272,6 +288,13 @@ def main() -> None:
         if args.resume:
             print(f"[resume] no checkpoint in {args.output_dir}; starting fresh")
         trainer.train()
+
+    # Keep the full loss history next to the final model (checkpoints get
+    # pruned by --save_total_limit). It survives --resume: the Trainer restores
+    # earlier entries from the checkpoint's trainer_state.json.
+    trainer.save_state()
+    n = write_history(trainer.state.log_history, os.path.join(args.output_dir, "history.csv"))
+    print(f"[history] {n} rows -> {os.path.join(args.output_dir, 'history.csv')}")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
 
