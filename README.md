@@ -82,6 +82,40 @@ before launching anything heavy and after any change to `transformers`:
 the decoder masking depends on GPT-2 internals that changed within the
 4.4x series.
 
+### Running on Slurm (PACE Phoenix)
+
+`scripts/submit.sh` submits every stage as a Slurm job with the right GPU,
+time limit and settings. Cluster details come from your environment rather
+than the repo; put them in `~/.bashrc`:
+
+```bash
+export RECAP_ACCOUNT=<charge account>    # pace-quota lists yours
+export RECAP_QOS=inferno                 # or embers (free, preemptible)
+export RECAP_GPU=a100                    # as listed by: sinfo -o "%G"
+export NOTIFY_EMAIL=<you>@gatech.edu     # optional: mail on start/end/failure
+```
+
+Then, from the repo root:
+
+```bash
+scripts/submit.sh list           # all jobs
+scripts/submit.sh preprocess     # features, embeddings, caches (about 2.5 h)
+scripts/submit.sh paper-caches   # caches for the paper split (reuses features)
+scripts/submit.sh g1             # sanity gate 1: k=0, 1 epoch
+scripts/submit.sh g2             # sanity gate 2: k=4, 3 epochs
+scripts/submit.sh run-a          # paper-faithful run (also run-b, run-c)
+```
+
+Any setting can be overridden for one submission, e.g.
+`SEED=1 scripts/submit.sh run-a` or `K=2 EPOCHS=5 scripts/submit.sh g2`;
+`DRY_RUN=1` prints the `sbatch` command instead. Training jobs evaluate and
+score on their eval sets, run the audio ablation and (for k > 0) the copy
+baseline, and end the log with a summary table. Every step leaves a marker
+in its output folder and training resumes from its last checkpoint
+(`train.py --resume`), so resubmitting after a timeout or preemption picks
+up where the job stopped. On `l40s` nodes PACE allows at most 4 CPUs per
+GPU; `submit.sh` caps it.
+
 ### Rebuilding artifacts from earlier runs
 
 Checkpoints, features and caches produced before the fixes on this branch
@@ -121,12 +155,9 @@ done
 Outputs: `$FEAT_DIR/audiocaps_{train,val,test}.hdf5`. All three configs
 below read from these.
 
-On a Slurm cluster, `scripts/phoenix_preprocess.sbatch` runs this step plus
-the retrieval embeddings and caches from sections 3 and 4 (empty and top-k)
-as one job. Fill in the `--account`, `--qos` and `--gres` lines at the top,
-then `mkdir -p logs && sbatch scripts/phoenix_preprocess.sbatch`. Finished
-steps leave a marker in `$FEAT_DIR/.done/`, so resubmitting after a timeout
-or preemption resumes where it stopped.
+On a Slurm cluster, `scripts/submit.sh preprocess` runs this step plus the
+retrieval embeddings and caches from sections 3 and 4 (empty and top-k) as
+one job; see "Running on Slurm" below.
 
 ---
 

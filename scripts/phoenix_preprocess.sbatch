@@ -2,20 +2,24 @@
 # One-time preprocessing on PACE Phoenix: CLAP features for cross-attention,
 # CLAP retrieval embeddings, and the retrieval caches (baseline + top-k).
 #
-# Fill in the three lines marked FILL IN, then from the repo root:
-#   mkdir -p logs && sbatch scripts/phoenix_preprocess.sbatch
+# Submit through scripts/submit.sh, which adds the account, QoS, GPU type,
+# time limit and email notifications:
+#   scripts/submit.sh preprocess       # full AudioCaps splits
+#   scripts/submit.sh paper-caches     # paper split: reuses the features above
 #
 # Each step leaves a marker in $FEAT_DIR/.done/, so resubmitting after a
 # crash, timeout or preemption skips the steps that already finished.
 # Delete $FEAT_DIR/.done/<step> to force a step to run again.
+#
+# REUSE_FROM=<features dir> links that directory's HDF5 features and audio
+# embeddings instead of recomputing them (they are keyed by clip, so a
+# subset split like data/paper_split can share them) and only builds the
+# text embeddings and caches for DATA_DIR.
 
 #SBATCH --job-name=recap-preprocess
-#SBATCH --account=FILL_IN            # FILL IN: charge account (sacctmgr show assoc user=$USER format=account,qos)
-#SBATCH --qos=embers                 # FILL IN: embers (free, can be preempted) or inferno (paid)
-#SBATCH --gres=gpu:A100:1            # FILL IN: GPU type name as listed by: sinfo -o "%G" | sort -u
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=08:00:00
 #SBATCH --output=logs/%x-%j.out
@@ -47,7 +51,21 @@ echo "audio: $AUDIO_DIR"
 echo "features: $FEAT_DIR"
 echo "csvs: $DATA_DIR"
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| cuda', torch.cuda.is_available())"
+if [ "${ALLOW_CPU:-0}" != 1 ]; then
+    python -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 'CUDA not available: compare the nvidia-smi CUDA version with the torch build')"
+fi
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || true
+
+if [ -n "${REUSE_FROM:-}" ]; then
+    echo "reusing features and audio embeddings from $REUSE_FROM"
+    for split in train val test; do
+        for f in "audiocaps_$split.hdf5" "audio_$split.npy" "audio_${split}_ids.csv" "empty_$split.json"; do
+            [ -e "$REUSE_FROM/$f" ] || { echo "missing $REUSE_FROM/$f" >&2; exit 1; }
+            ln -sfn "$REUSE_FROM/$f" "$FEAT_DIR/$f"
+        done
+        touch "$FEAT_DIR/.done/features_$split" "$FEAT_DIR/.done/audio_emb_$split" "$FEAT_DIR/.done/empty_$split"
+    done
+fi
 
 step() {  # step <name> <command...>
     local name=$1; shift
