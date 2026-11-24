@@ -3,8 +3,9 @@
 #   python -m venv .venv && source .venv/bin/activate
 #   pip install -r requirements.txt
 #
-# Not pip-installable: Java (JDK 8 or newer) is needed for scoring, which runs
-# PTB tokenization, METEOR and SPICE. On macOS: brew install openjdk.
+# Not pip-installable: Java (JDK 11) is needed for scoring, which runs PTB
+# tokenization, METEOR and SPICE (SPICE crashes on recent Java). On macOS:
+# brew install openjdk@11. See the README for the SPICE CoreNLP jars.
 #
 # On a CUDA machine, install torch for your CUDA version first (see README),
 # then this file.

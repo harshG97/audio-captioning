@@ -34,10 +34,21 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-With pip, install Java separately (JDK 8 or newer; on macOS
-`brew install openjdk`). Scoring needs it for PTB tokenization, METEOR and
-SPICE, and `score_predictions.py` stops with an error if it is missing. SPICE
-also downloads Stanford CoreNLP models on its first run.
+With pip, install Java separately (JDK 11; on macOS `brew install openjdk@11`).
+Scoring needs it for PTB tokenization, METEOR and SPICE, and
+`score_predictions.py` stops with an error if it is missing. SPICE 1.0
+crashes on recent Java releases, so `env.yml` pins `openjdk=11`.
+
+SPICE also needs Stanford CoreNLP 3.6.0. On its first run it tries to
+download it from nlp.stanford.edu, which is often unreachable; if SPICE is
+skipped with a `URLError`, fetch the two jars from Maven Central instead:
+
+```bash
+cd "$(python -c 'import pycocoevalcap.spice.spice as s, os; print(os.path.dirname(s.__file__))')/lib"
+for f in stanford-corenlp-3.6.0.jar stanford-corenlp-3.6.0-models.jar; do
+  curl -fL -o $f https://repo1.maven.org/maven2/edu/stanford/nlp/stanford-corenlp/3.6.0/$f
+done
+```
 
 Both setups pin `transformers==4.45.2`; keep it exact (see the comment in
 `env.yml`). `torch` comes from pip in both. On CUDA hardware you may want
@@ -139,6 +150,11 @@ LOCAL=1 K=2 DEDUP=1 scripts/submit.sh g2
 Outputs go to `~/scratch/recap` (set `SCRATCH_RECAP` to change it) and the
 Hugging Face cache to `~/.cache/huggingface`. `RECAP_ACCOUNT` is not needed,
 and sbatch options such as `--time` are ignored.
+
+On AWS Deep Learning AMIs, `LD_LIBRARY_PATH` points at the system CUDA, whose
+cuDNN clashes with the one bundled with pip's torch (convolutions fail with
+`CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED`). Add `unset LD_LIBRARY_PATH` to the
+end of `~/.bashrc`; torch does not need the system CUDA.
 
 ### Rebuilding artifacts from earlier runs
 
