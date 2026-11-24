@@ -214,6 +214,7 @@ def main() -> None:
         max_length=args.max_length,
         decoder_start_token_id=model.config.decoder_start_token_id,
         prompt_dropout=args.prompt_dropout,
+        retrieval_k=args.retrieval_k if args.rag else None,
     )
     eval_ds = None
     if args.val_csv and args.val_hdf5 and args.val_retrieval_cache:
@@ -225,6 +226,7 @@ def main() -> None:
             dataset=args.dataset,
             max_length=args.max_length,
             decoder_start_token_id=model.config.decoder_start_token_id,
+            retrieval_k=args.retrieval_k if args.rag else None,
         )
 
     collator = RecapCollator(pad_token_id=tokenizer.pad_token_id)

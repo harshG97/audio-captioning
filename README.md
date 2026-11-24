@@ -112,7 +112,8 @@ Any setting can be overridden for one submission, e.g.
 distinct captions only (`build_retrieval_cache.py --dedupe_captions`: the
 full 2.0 datastore repeats some captions hundreds of times, so 18% of its
 rows merge; 8% for the paper split), and the run name gets a `_dedup`
-suffix so both versions can be compared. Preprocessing builds both caches. Training jobs evaluate and
+suffix so both versions can be compared. Preprocessing builds both caches. `K=1`, `K=2` or `K=3` uses the first k
+captions of the top-4 caches and names the run accordingly (`a_paper_k2_s42`). Training jobs evaluate and
 score on their eval sets, run the audio ablation and (for k > 0) the copy
 baseline, and end the log with a summary table. Every step leaves a marker
 in its output folder and training resumes from its last checkpoint
@@ -293,6 +294,12 @@ python score_predictions.py \
     --output $RUNS_DIR/recap-topk/metrics_test.json \
     --train_csv data/train.csv
 ```
+
+`--retrieval_k` sets how many cached captions go into each prompt (the first
+k, most similar first), so a top-4 cache also serves k=1 to 3. The value is
+saved in the checkpoint config, and `evaluate.py` and `ablate_audio.py` use
+it by default, so evaluation always matches training (`evaluate.py
+--retrieval_k` overrides it).
 
 ---
 

@@ -16,6 +16,8 @@
 # Any run setting can be overridden for one submission, for example
 #   SEED=1 scripts/submit.sh run-a
 #   K=2 EPOCHS=5 scripts/submit.sh g2
+# K sets the captions per prompt (1 to 4, taken from the top-4 caches) and
+# appears in the run name (a_paper_k2_s42), so each k gets its own run folder.
 # DEDUP=1 retrieves from distinct captions only (repeated captions merged);
 # the run name gets a _dedup suffix so both versions sit side by side.
 # DRY_RUN=1 prints the sbatch command instead of submitting.
@@ -76,17 +78,17 @@ case $job in
                DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-1} ;;
     g2)
         script=scripts/phoenix_train.sbatch; time=06:00:00
-        export RUN_NAME=${RUN_NAME:-g2_k4${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-3} \
+        export RUN_NAME=${RUN_NAME:-g2_k${K:-4}${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-3} \
                DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-1} ;;
     run-a)
         script=scripts/phoenix_train.sbatch; time=24:00:00
-        export RUN_NAME=${RUN_NAME:-a_paper_k4${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
+        export RUN_NAME=${RUN_NAME:-a_paper_k${K:-4}${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
                PATIENCE=${PATIENCE:-5} DATA_DIR=data/paper_split CACHE_DIR=$PAPER_FEAT \
                SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/paper_split/val.csv:val test:data/paper_split/test.csv:test" ;;
     run-b)
         script=scripts/phoenix_train.sbatch; time=24:00:00
-        export RUN_NAME=${RUN_NAME:-b_full_k4${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
+        export RUN_NAME=${RUN_NAME:-b_full_k${K:-4}${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
                PATIENCE=${PATIENCE:-5} DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/val.csv:val test:data/test.csv:test papertest:data/paper_split/test.csv:test" ;;
     run-c)

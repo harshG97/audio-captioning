@@ -157,6 +157,15 @@ def test_dataset_item_layout(recap, data_files):
     assert tuple(item["encoder_hidden_states"].shape) == (ENC_LEN, HIDDEN)
 
 
+def test_dataset_uses_first_k_captions(recap, data_files):
+    _, tok = recap
+    for k, expected in [(None, RETRIEVED["abc_0"]), (1, RETRIEVED["abc_0"][:1])]:
+        item = _dataset(data_files, tok, retrieval_k=k)[0]
+        prompt_ids = tok(build_prompt(expected), add_special_tokens=False)["input_ids"]
+        assert item["decoder_input_ids"].tolist()[1:len(prompt_ids) + 1] == prompt_ids
+        assert item["labels"].tolist()[:len(prompt_ids)] == [-100] * len(prompt_ids)
+
+
 def test_prompt_dropout_uses_baseline_prompt(recap, data_files):
     _, tok = recap
     item = _dataset(data_files, tok, prompt_dropout=1.0)[0]

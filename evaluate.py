@@ -31,7 +31,7 @@ from data.access_id import DATASETS, build_access_id_column
 from data.caption_filter import warn_if_cache_has_placeholders
 from model.device import best_device
 from model.recap import RECAP
-from retrieval.prompt_builder import GENERATION_STOP_STRINGS, build_prompt
+from retrieval.prompt_builder import GENERATION_STOP_STRINGS, build_prompt, checkpoint_retrieval_k, first_k
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +40,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--csv_path", type=str, required=True)
     p.add_argument("--hdf5_path", type=str, required=True)
     p.add_argument("--retrieval_cache", type=str, required=True)
+    p.add_argument("--retrieval_k", type=int, default=None,
+                   help="Captions per prompt. Default: the k the checkpoint was "
+                        "trained with (config.retrieval_k), else the whole cache entry.")
     p.add_argument("--dataset", type=str, default="audiocaps", choices=DATASETS)
     p.add_argument("--output_path", type=str, required=True)
     p.add_argument("--max_new_tokens", type=int, default=60)
@@ -186,6 +189,8 @@ def main() -> None:
 
     cache = json.loads(Path(args.retrieval_cache).read_text())
     warn_if_cache_has_placeholders(cache, source=args.retrieval_cache)
+    k = args.retrieval_k if args.retrieval_k is not None else checkpoint_retrieval_k(model.config)
+    print(f"Retrieved captions per prompt: {k if k is not None else 'all in cache'}")
 
     # Group references by access_id (val/test clips have multiple gold captions)
     references_by_id: dict[str, list[str]] = {}
@@ -197,7 +202,7 @@ def main() -> None:
         available = set(h5f.keys())
         unique_ids = [aid for aid in references_by_id if aid in available and aid in cache]
         for access_id in tqdm(unique_ids, desc="generate"):
-            retrieved = cache[access_id]
+            retrieved = first_k(cache[access_id], k)
             prompt = build_prompt(retrieved)
             prompt_ids = _build_prompt_ids(tokenizer, prompt, args.max_prompt_length)
 

@@ -51,6 +51,10 @@ WORKERS=${SLURM_CPUS_PER_TASK:-8}
 export HF_HOME=${HF_HOME:-$PROJ/.cache/huggingface}
 
 RUN_DIR=$RUNS_DIR/$RUN_NAME
+if [ "$K" -gt "$CACHE_K" ]; then
+    echo "K=$K but the caches hold only $CACHE_K captions per clip (CACHE_K)" >&2
+    exit 1
+fi
 
 # ---------- environment ----------
 if [ "${SKIP_CONDA:-0}" != 1 ]; then

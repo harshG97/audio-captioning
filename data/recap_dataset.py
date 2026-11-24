@@ -31,7 +31,7 @@ from torch.utils.data import Dataset
 
 from data.access_id import build_access_id_column
 from data.caption_filter import drop_placeholder_captions, warn_if_cache_has_placeholders
-from retrieval.prompt_builder import build_prompt
+from retrieval.prompt_builder import build_prompt, first_k
 
 
 class RecapDataset(Dataset):
@@ -45,6 +45,7 @@ class RecapDataset(Dataset):
         max_length: int = 128,
         decoder_start_token_id: Optional[int] = None,
         prompt_dropout: float = 0.0,
+        retrieval_k: Optional[int] = None,
     ) -> None:
         df = pd.read_csv(csv_path)
         df = build_access_id_column(df, dataset)
@@ -66,6 +67,13 @@ class RecapDataset(Dataset):
             print(f"[RecapDataset] Skipping {dropped} rows missing audio features or retrieval.")
         self.df = df.loc[keep].reset_index(drop=True)
         self.cache = cache
+        # Use the first retrieval_k cached captions (None = all of them).
+        self.retrieval_k = retrieval_k
+        if retrieval_k is not None:
+            short = sum(len(v) < retrieval_k for v in cache.values())
+            if short:
+                print(f"[WARN] {short} cache entries in {retrieval_cache_path} have fewer "
+                      f"than retrieval_k={retrieval_k} captions; those prompts are shorter.")
         self.hdf5_path = hdf5_path
         self.tokenizer = tokenizer
         self.max_length = max_length
@@ -92,7 +100,7 @@ class RecapDataset(Dataset):
         row = self.df.iloc[idx]
         access_id = str(row["access_id"])
         gt_caption = str(row["caption"])
-        retrieved = self.cache[access_id]
+        retrieved = first_k(self.cache[access_id], self.retrieval_k)
         if self.prompt_dropout > 0.0 and random.random() < self.prompt_dropout:
             # Forces the decoder to rely on cross-attention rather than the
             # retrieved-caption text, by collapsing the prompt to BASELINE_PROMPT.

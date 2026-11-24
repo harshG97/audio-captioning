@@ -24,6 +24,8 @@ GPT-2's natural tokenization (" like", " a", ...) instead of a lone space
 token before the caption.
 """
 
+from typing import Optional, Sequence
+
 RETRIEVAL_HEADER = "Similar audios sound like"
 CAPTION_SEPARATOR = "\n\n"
 BASELINE_PROMPT = "This audio sounds like"
@@ -101,3 +103,23 @@ if __name__ == "__main__":
     result = build_prompt_with_metadata(dummy_captions, strategy="mmr", k=4)
     for key, val in result.items():
         print(f"{key}: {val}")
+
+
+def first_k(captions: Sequence[str], k: Optional[int]) -> list[str]:
+    """The first k retrieved captions (all of them when k is None).
+
+    Caches list captions most similar first, and every strategy we use picks
+    greedily, so the first k of a top-4 cache are exactly the top-k: one cache
+    serves every k up to the k it was built with.
+    """
+    return list(captions) if k is None else list(captions[:k])
+
+
+def checkpoint_retrieval_k(config) -> Optional[int]:
+    """The k a checkpoint was trained with, or None for no-retrieval or
+    checkpoints that predate the setting (they then use the whole cache entry,
+    which is how they were trained)."""
+    if not getattr(config, "rag", False):
+        return None
+    k = getattr(config, "retrieval_k", None)
+    return int(k) if k is not None else None

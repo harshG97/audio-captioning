@@ -34,3 +34,21 @@ def test_stop_strings_cut_continuations():
     assert clean_prediction("this audio sounds like a dog", GENERATION_STOP_STRINGS) == ""
     assert clean_prediction("a man speaks while birds chirp", GENERATION_STOP_STRINGS) == \
         "a man speaks while birds chirp"
+
+
+def test_first_k():
+    from retrieval.prompt_builder import first_k
+    caps = ["a", "b", "c", "d"]
+    assert first_k(caps, None) == caps
+    assert first_k(caps, 2) == ["a", "b"]
+    assert first_k(caps, 9) == caps
+    assert first_k([], 2) == []
+
+
+def test_checkpoint_retrieval_k():
+    from types import SimpleNamespace
+    from retrieval.prompt_builder import checkpoint_retrieval_k
+    assert checkpoint_retrieval_k(SimpleNamespace(rag=True, retrieval_k=2)) == 2
+    assert checkpoint_retrieval_k(SimpleNamespace(rag=False, retrieval_k=4)) is None
+    assert checkpoint_retrieval_k(SimpleNamespace(rag=True)) is None     # older checkpoints
+    assert checkpoint_retrieval_k(SimpleNamespace()) is None

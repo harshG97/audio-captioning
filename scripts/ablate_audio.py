@@ -38,6 +38,7 @@ if _REPO_ROOT not in sys.path:
 
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
+from retrieval.prompt_builder import checkpoint_retrieval_k
 from model.device import best_device
 from model.recap import RECAP
 
@@ -94,6 +95,7 @@ def main() -> None:
         dataset=args.dataset,
         max_length=args.max_length,
         decoder_start_token_id=model.config.decoder_start_token_id,
+        retrieval_k=checkpoint_retrieval_k(model.config),
     )
     collator = RecapCollator(pad_token_id=tokenizer.pad_token_id)
     loader = DataLoader(
