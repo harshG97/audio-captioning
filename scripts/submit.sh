@@ -21,6 +21,13 @@
 # DEDUP=1 retrieves from distinct captions only (repeated captions merged);
 # the run name gets a _dedup suffix so both versions sit side by side.
 # DRY_RUN=1 prints the sbatch command instead of submitting.
+#
+# LOCAL=1 runs the job right here instead of submitting it, for a single GPU
+# machine without Slurm (a cloud instance, say). Activate the conda env
+# first and set AUDIO_DIR for the preprocessing jobs; RECAP_ACCOUNT is not
+# needed and extra sbatch options are ignored. The log is tee'd to logs/.
+#   LOCAL=1 AUDIO_DIR=~/data/audiocaps_raw_audio scripts/submit.sh preprocess
+#   LOCAL=1 K=2 DEDUP=1 scripts/submit.sh g2
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -45,7 +52,10 @@ job=${1:-}
 shift
 [ "$job" = list ] && { usage; exit 0; }
 
-: "${RECAP_ACCOUNT:?set RECAP_ACCOUNT (your charge account) in ~/.bashrc}"
+LOCAL=${LOCAL:-0}
+if [ "$LOCAL" != 1 ]; then
+    : "${RECAP_ACCOUNT:?set RECAP_ACCOUNT (your charge account) in ~/.bashrc}"
+fi
 QOS=${RECAP_QOS:-inferno}
 GPU=${RECAP_GPU:-a100}
 CPUS=${RECAP_CPUS:-8}
@@ -100,14 +110,34 @@ case $job in
         echo "unknown job: $job" >&2; usage >&2; exit 1 ;;
 esac
 
+mkdir -p logs
+echo "job: $job  script: $script  ${RUN_NAME:+run: $RUNS_DIR/$RUN_NAME}"
+
+if [ "$LOCAL" = 1 ]; then
+    # No module system or cluster paths here: use the active env, keep the
+    # Hugging Face cache in $HOME, and require the audio location explicitly.
+    export SKIP_CONDA=1 PROJ=${PROJ:-$SCRATCH_RECAP}
+    export HF_HOME=${HF_HOME:-$HOME/.cache/huggingface}
+    if [ "$script" = scripts/phoenix_preprocess.sbatch ] && [ -z "${REUSE_FROM:-}" ]; then
+        : "${AUDIO_DIR:?set AUDIO_DIR to the raw audio folder}"
+    fi
+    [ $# -eq 0 ] || echo "note: LOCAL=1 ignores the sbatch options: $*"
+    log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
+    if [ "${DRY_RUN:-0}" = 1 ]; then
+        echo "bash $script 2>&1 | tee $log"
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|AUDIO_DIR|HF_HOME)=' | sort
+        exit 0
+    fi
+    echo "log: $log"
+    bash "$script" 2>&1 | tee "$log"   # pipefail: exits with the job's status
+    exit
+fi
+
 args=(--account="$RECAP_ACCOUNT" --qos="$QOS" --gres="gpu:$GPU:1"
       --cpus-per-task="$CPUS" --mem="$MEM" --time="$time" --job-name="recap-$job")
 if [ -n "${NOTIFY_EMAIL:-}" ]; then
     args+=("--mail-type=BEGIN,END,FAIL" --mail-user="$NOTIFY_EMAIL")
 fi
-
-mkdir -p logs
-echo "job: $job  script: $script  ${RUN_NAME:+run: $RUNS_DIR/$RUN_NAME}"
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
     env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE)=' | sort

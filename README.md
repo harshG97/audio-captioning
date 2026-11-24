@@ -121,6 +121,25 @@ in its output folder and training resumes from its last checkpoint
 up where the job stopped. On `l40s` nodes PACE allows at most 4 CPUs per
 GPU; `submit.sh` caps it.
 
+### Running on a single GPU machine (no Slurm)
+
+On a machine without Slurm, such as a cloud GPU instance, `LOCAL=1` runs the
+same jobs in the foreground instead of submitting them. Activate the env
+first; the log is also written to `logs/`. Run it inside `tmux` so a dropped
+SSH connection does not stop the job.
+
+```bash
+conda activate audio
+export AUDIO_DIR=~/data/audiocaps_raw_audio   # only preprocessing reads it
+LOCAL=1 scripts/submit.sh preprocess
+LOCAL=1 scripts/submit.sh paper-caches
+LOCAL=1 K=2 DEDUP=1 scripts/submit.sh g2
+```
+
+Outputs go to `~/scratch/recap` (set `SCRATCH_RECAP` to change it) and the
+Hugging Face cache to `~/.cache/huggingface`. `RECAP_ACCOUNT` is not needed,
+and sbatch options such as `--time` are ignored.
+
 ### Rebuilding artifacts from earlier runs
 
 Checkpoints, features and caches produced before the fixes on this branch
