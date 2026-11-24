@@ -67,7 +67,9 @@ mkdir -p "$RUN_DIR/.done"
 
 echo "host: $(hostname)  job: ${SLURM_JOB_ID:-local}  start: $(date)"
 echo "run: $RUN_DIR"
-echo "K=$K cache=top${CACHE_K}${CACHE_VARIANT} epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
+cache_label=top${CACHE_K}${CACHE_VARIANT}
+[ "$K" -eq 0 ] && cache_label=empty
+echo "K=$K cache=$cache_label epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
 echo "train csv: $DATA_DIR/train.csv  features: $FEAT_DIR  caches: $CACHE_DIR"
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| cuda', torch.cuda.is_available())"
 if [ "${ALLOW_CPU:-0}" != 1 ]; then
