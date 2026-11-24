@@ -12,12 +12,23 @@ Inputs (paired):
 
 Self-exclusion: if a query access_id appears in the datastore (in-domain
 training case), its row is masked before top-k.
+
+--dedupe_captions merges datastore rows whose captions are identical after
+normalisation (case, punctuation, spacing) into one entry, so the k retrieved
+captions are k different texts. AudioCaps 2.0 repeats some captions hundreds
+of times ("a person is snoring while sleeping" x358), which otherwise fills a
+prompt with one caption k times. Identical texts have identical CLAP
+embeddings, so merging changes nothing else about the ranking. Self-exclusion
+still applies: an entry is masked for a query only when that query is the
+only clip carrying the caption.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +41,62 @@ from data.caption_filter import drop_placeholder_captions
 def _l2_normalize(matrix: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     norms = np.linalg.norm(matrix, axis=1, keepdims=True)
     return matrix / np.maximum(norms, eps)
+
+
+def caption_key(caption: str) -> str:
+    """Normalised caption text used to decide whether two captions are the same."""
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", caption.lower()).split())
+
+
+def _dedupe_datastore(
+    ds_norm: np.ndarray, ds_access_ids: np.ndarray, ds_captions: list[str],
+) -> tuple[np.ndarray, list[str], list[frozenset]]:
+    """Collapse rows with the same caption_key into one entry.
+
+    Returns the kept embeddings, captions (first occurrence's wording) and, per
+    entry, the set of access_ids carrying that caption.
+    """
+    first: dict[str, int] = {}
+    owners: dict[str, set] = defaultdict(set)
+    for i, cap in enumerate(ds_captions):
+        key = caption_key(cap)
+        first.setdefault(key, i)
+        owners[key].add(str(ds_access_ids[i]))
+    keys = list(first)
+    rows = [first[k] for k in keys]
+    return ds_norm[rows], [ds_captions[i] for i in rows], [frozenset(owners[k]) for k in keys]
+
+
+def build_cache(
+    query_ids: list[str],
+    query_norm: np.ndarray,
+    ds_norm: np.ndarray,
+    ds_access_ids: np.ndarray,
+    ds_captions: list[str],
+    k: int,
+    strategy: str = "topk",
+    mmr_lambda: float = 0.7,
+    dedupe: bool = False,
+) -> dict[str, list[str]]:
+    """{query access_id: k captions}, most similar first, self-excluded."""
+    if dedupe:
+        ds_norm, ds_captions, owners = _dedupe_datastore(ds_norm, ds_access_ids, ds_captions)
+        sole_owner = np.array([next(iter(o)) if len(o) == 1 else "" for o in owners], dtype=object)
+    else:
+        sole_owner = np.asarray(ds_access_ids, dtype=object)
+
+    cache: dict[str, list[str]] = {}
+    for i, q_id in enumerate(query_ids):
+        sims = ds_norm @ query_norm[i]                              # (N,)
+        sims = np.where(sole_owner == q_id, -np.inf, sims)
+        kk = min(k, int(np.isfinite(sims).sum()))
+        if strategy == "topk":
+            top = np.argpartition(-sims, kth=min(kk, len(sims) - 1))[:kk]
+            picks = top[np.argsort(-sims[top])].tolist()
+        else:
+            picks = _mmr_select(sims, ds_norm, kk, mmr_lambda)
+        cache[q_id] = [ds_captions[j] for j in picks]
+    return cache
 
 
 def _mmr_select(
@@ -85,6 +152,10 @@ def main() -> None:
             "unexpected overlap as a leakage guard."
         ),
     )
+    parser.add_argument(
+        "--dedupe_captions", action="store_true",
+        help="Merge datastore captions that are identical after normalisation, "
+             "so the k retrieved captions are k different texts.")
     args = parser.parse_args()
 
     if args.k < 1:
@@ -138,19 +209,15 @@ def main() -> None:
     query_norm = _l2_normalize(query_emb)
     ds_norm = _l2_normalize(ds_emb)
 
-    cache: dict[str, list[str]] = {}
-    for i, q_id in enumerate(query_ids):
-        sims = ds_norm @ query_norm[i]                              # (N,)
-        sims = np.where(ds_access_ids == q_id, -np.inf, sims)
+    if args.dedupe_captions:
+        n_unique = len({caption_key(c) for c in ds_captions})
+        print(f"[info] dedupe: {len(ds_captions)} datastore captions -> {n_unique} distinct")
 
-        if args.strategy == "topk":
-            top = np.argpartition(-sims, kth=min(args.k, len(sims) - 1))[: args.k]
-            top = top[np.argsort(-sims[top])]
-            picks = top.tolist()
-        else:
-            picks = _mmr_select(sims, ds_norm, args.k, args.mmr_lambda)
-
-        cache[q_id] = [ds_captions[j] for j in picks]
+    cache = build_cache(
+        query_ids, query_norm, ds_norm, ds_access_ids, ds_captions,
+        k=args.k, strategy=args.strategy, mmr_lambda=args.mmr_lambda,
+        dedupe=args.dedupe_captions,
+    )
 
     out = Path(args.output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
