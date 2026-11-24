@@ -99,7 +99,8 @@ for split in train val test; do
         --batch_size 16 --num_workers "$WORKERS"
 done
 
-# 4. Caches: empty (no-retrieval baseline) and top-k
+# 4. Caches: empty (no-retrieval baseline), top-k, and top-k over distinct
+#    captions (_dedup: repeated captions merged so the k are all different)
 for split in train val test; do
     step "empty_$split" python -m retrieval.build_baseline_cache \
         --csv_path "$DATA_DIR/$split.csv" --dataset audiocaps \
@@ -113,6 +114,12 @@ for split in train val test; do
         --datastore_csv_path "$DATA_DIR/train.csv" --datastore_dataset audiocaps \
         --output_path "$FEAT_DIR/retrieved_top${K}_$split.json" \
         --k "$K" --strategy topk --role "$role"
+    step "top${K}_dedup_$split" python -m retrieval.build_retrieval_cache \
+        --query_emb_path "$FEAT_DIR/audio_$split.npy" --query_ids_path "$FEAT_DIR/audio_${split}_ids.csv" \
+        --datastore_emb_path "$FEAT_DIR/text_train.npy" \
+        --datastore_csv_path "$DATA_DIR/train.csv" --datastore_dataset audiocaps \
+        --output_path "$FEAT_DIR/retrieved_top${K}_dedup_$split.json" \
+        --k "$K" --strategy topk --role "$role" --dedupe_captions
 done
 
 echo "=== all done  $(date)"

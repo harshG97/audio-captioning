@@ -35,6 +35,7 @@ DATA_DIR=${DATA_DIR:-data}                                 # train/val CSVs
 RUN_NAME=${RUN_NAME:?set RUN_NAME}
 K=${K:-4}                     # captions in the prompt; 0 = no retrieval
 CACHE_K=${CACHE_K:-4}         # k the top-k caches were built with (>= K)
+CACHE_VARIANT=${CACHE_VARIANT:-}   # "" or "_dedup" (distinct captions only)
 EPOCHS=${EPOCHS:-1}
 BATCH=${BATCH:-32}
 LR=${LR:-5e-5}
@@ -62,7 +63,7 @@ mkdir -p "$RUN_DIR/.done"
 
 echo "host: $(hostname)  job: ${SLURM_JOB_ID:-local}  start: $(date)"
 echo "run: $RUN_DIR"
-echo "K=$K epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
+echo "K=$K cache=top${CACHE_K}${CACHE_VARIANT} epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
 echo "train csv: $DATA_DIR/train.csv  features: $FEAT_DIR  caches: $CACHE_DIR"
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| cuda', torch.cuda.is_available())"
 if [ "${ALLOW_CPU:-0}" != 1 ]; then
@@ -83,7 +84,7 @@ step() {  # step <name> <command...>
 
 cache() {  # cache <split>
     if [ "$K" -gt 0 ]; then
-        echo "$CACHE_DIR/retrieved_top${CACHE_K}_$1.json"
+        echo "$CACHE_DIR/retrieved_top${CACHE_K}${CACHE_VARIANT}_$1.json"
     else
         echo "$FEAT_DIR/empty_$1.json"
     fi

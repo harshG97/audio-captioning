@@ -108,7 +108,11 @@ scripts/submit.sh run-a          # paper-faithful run (also run-b, run-c)
 
 Any setting can be overridden for one submission, e.g.
 `SEED=1 scripts/submit.sh run-a` or `K=2 EPOCHS=5 scripts/submit.sh g2`;
-`DRY_RUN=1` prints the `sbatch` command instead. Training jobs evaluate and
+`DRY_RUN=1` prints the `sbatch` command instead. `DEDUP=1` retrieves from
+distinct captions only (`build_retrieval_cache.py --dedupe_captions`: the
+full 2.0 datastore repeats some captions hundreds of times, so 18% of its
+rows merge; 8% for the paper split), and the run name gets a `_dedup`
+suffix so both versions can be compared. Preprocessing builds both caches. Training jobs evaluate and
 score on their eval sets, run the audio ablation and (for k > 0) the copy
 baseline, and end the log with a summary table. Every step leaves a marker
 in its output folder and training resumes from its last checkpoint

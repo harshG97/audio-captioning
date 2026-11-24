@@ -16,6 +16,8 @@
 # Any run setting can be overridden for one submission, for example
 #   SEED=1 scripts/submit.sh run-a
 #   K=2 EPOCHS=5 scripts/submit.sh g2
+# DEDUP=1 retrieves from distinct captions only (repeated captions merged);
+# the run name gets a _dedup suffix so both versions sit side by side.
 # DRY_RUN=1 prints the sbatch command instead of submitting.
 
 set -euo pipefail
@@ -24,7 +26,8 @@ cd "$(dirname "$0")/.."
 usage() {
     cat <<'EOF'
 jobs:
-  preprocess    CLAP features, retrieval embeddings, empty and top-4 caches (full splits)
+  preprocess    CLAP features, retrieval embeddings, empty and top-4 caches (full splits),
+                top-4 caches both as-is and over distinct captions (_dedup)
   paper-caches  top-4 caches with the paper split's train captions as the datastore
                 (reuses the preprocess features; run after preprocess)
   g1            sanity gate 1: k=0, 1 epoch on the full train set, checked on val
@@ -55,6 +58,11 @@ export FEAT_DIR=${FEAT_DIR:-$SCRATCH_RECAP/features}
 export RUNS_DIR=${RUNS_DIR:-$SCRATCH_RECAP/runs}
 export SEED=${SEED:-42}
 PAPER_FEAT=$SCRATCH_RECAP/features_paper
+DEDUP_SUFFIX=""
+if [ "${DEDUP:-0}" = 1 ]; then
+    export CACHE_VARIANT=_dedup
+    DEDUP_SUFFIX=_dedup
+fi
 
 case $job in
     preprocess)
@@ -68,17 +76,17 @@ case $job in
                DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-1} ;;
     g2)
         script=scripts/phoenix_train.sbatch; time=06:00:00
-        export RUN_NAME=${RUN_NAME:-g2_k4_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-3} \
+        export RUN_NAME=${RUN_NAME:-g2_k4${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-3} \
                DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-1} ;;
     run-a)
         script=scripts/phoenix_train.sbatch; time=24:00:00
-        export RUN_NAME=${RUN_NAME:-a_paper_k4_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
+        export RUN_NAME=${RUN_NAME:-a_paper_k4${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
                PATIENCE=${PATIENCE:-5} DATA_DIR=data/paper_split CACHE_DIR=$PAPER_FEAT \
                SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/paper_split/val.csv:val test:data/paper_split/test.csv:test" ;;
     run-b)
         script=scripts/phoenix_train.sbatch; time=24:00:00
-        export RUN_NAME=${RUN_NAME:-b_full_k4_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
+        export RUN_NAME=${RUN_NAME:-b_full_k4${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
                PATIENCE=${PATIENCE:-5} DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/val.csv:val test:data/test.csv:test papertest:data/paper_split/test.csv:test" ;;
     run-c)
@@ -100,7 +108,7 @@ mkdir -p logs
 echo "job: $job  script: $script  ${RUN_NAME:+run: $RUNS_DIR/$RUN_NAME}"
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"
