@@ -42,9 +42,9 @@ def _checkpoint(run_dir, step):
     ckpt = Path(run_dir) / f"checkpoint-{step}"
     ckpt.mkdir(parents=True)
     for name in ["model.safetensors", "config.json", "tokenizer.json",
-                 "trainer_state.json", "optimizer.pt", "scheduler.pt",
-                 "rng_state.pth", "scaler.pt"]:
+                 "optimizer.pt", "scheduler.pt", "rng_state.pth", "scaler.pt"]:
         (ckpt / name).write_text(name)
+    (ckpt / "trainer_state.json").write_text(f'{{"global_step": {step}}}')
     return ckpt
 
 

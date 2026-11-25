@@ -177,6 +177,12 @@ RESUME_FROM=$HOME/scratch/recap/runs/a_paper_k4_last_s42/snapshots/epoch040 \
     TAG=from40 KEEP=last scripts/submit.sh run-a
 ```
 
+A resubmitted job resumes from the newest complete checkpoint; one left
+half-written by a killed job is skipped (`[resume] skipping incomplete ...`).
+Resuming, with `--resume` or `RESUME_FROM`, continues the same random
+streams as the uninterrupted run (dataloader workers included), so it ends
+where that run would have, up to the GPU's floating-point variation.
+
 `SEED` sets the cross-attention initialisation and the data order. Two runs
 with the same seed match exactly on one CPU thread; on a GPU or with
 several threads they can differ slightly in the last digits.

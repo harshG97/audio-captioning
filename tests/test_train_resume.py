@@ -7,6 +7,7 @@ numpy types.
 
 Run: python -m pytest tests/test_train_resume.py -q
 """
+import json
 import random
 import sys
 from pathlib import Path
@@ -48,12 +49,50 @@ def test_rng_state_needs_the_allowlist(tmp_path):
         torch.load(path)
 
 
+def _complete_checkpoint(path, step):
+    path.mkdir(parents=True)
+    for name in ("model.safetensors", "optimizer.pt", "scheduler.pt", "rng_state.pth"):
+        (path / name).write_bytes(b"x")
+    (path / "trainer_state.json").write_text(json.dumps({"global_step": step}))
+    return path
+
+
 def test_resume_checkpoint_picks_latest(tmp_path):
     assert train.resume_checkpoint(str(tmp_path / "missing")) is None
     assert train.resume_checkpoint(str(tmp_path)) is None
     for step in (5, 40, 12):
-        (tmp_path / f"checkpoint-{step}").mkdir()
+        _complete_checkpoint(tmp_path / f"checkpoint-{step}", step)
+    # numeric order, not alphabetical (checkpoint-5 > checkpoint-40 as text)
     assert train.resume_checkpoint(str(tmp_path)).endswith("checkpoint-40")
+
+
+@pytest.mark.parametrize("damage", [
+    "trainer_state.json", "optimizer.pt", "scheduler.pt", "model.safetensors", "corrupt_state",
+])
+def test_resume_checkpoint_skips_an_interrupted_save(tmp_path, capsys, damage):
+    _complete_checkpoint(tmp_path / "checkpoint-12", 12)
+    newest = _complete_checkpoint(tmp_path / "checkpoint-40", 40)
+    if damage == "corrupt_state":
+        (newest / "trainer_state.json").write_text('{"global_step": 4')   # cut off mid-write
+    else:
+        (newest / damage).unlink()
+    assert train.resume_checkpoint(str(tmp_path)).endswith("checkpoint-12")
+    assert "skipping incomplete" in capsys.readouterr().out
+
+
+def test_resume_checkpoint_with_nothing_complete(tmp_path):
+    (tmp_path / "checkpoint-3").mkdir()
+    (tmp_path / "checkpoint-notanumber").mkdir()
+    (tmp_path / "checkpoint-9.txt").write_text("not a folder")
+    assert train.resume_checkpoint(str(tmp_path)) is None
+
+
+def test_full_checkpoint_accepts_sharded_or_bin_weights(tmp_path):
+    for weights in ("pytorch_model.bin", "model.safetensors.index.json"):
+        ckpt = _complete_checkpoint(tmp_path / weights, 1)
+        (ckpt / "model.safetensors").unlink()
+        (ckpt / weights).write_text("x")
+        assert train.is_full_checkpoint(str(ckpt))
 
 
 REQUIRED = ["train.py", "--train_csv", "t.csv", "--train_hdf5", "t.h5",

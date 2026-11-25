@@ -11,14 +11,15 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import json
 import os
+import re
 import shutil
 
 import h5py
 import numpy as np
 import torch
 from transformers import EarlyStoppingCallback, Trainer, TrainerCallback, TrainingArguments, set_seed
-from transformers.trainer_utils import get_last_checkpoint
 
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
@@ -200,10 +201,22 @@ def checkpoint_safe_globals() -> list:
 
 
 def resume_checkpoint(output_dir: str) -> str | None:
-    """Latest checkpoint-* folder in output_dir, or None to start fresh."""
+    """Newest complete checkpoint-* folder in output_dir, or None to start
+    fresh. A checkpoint left half-written (the job was killed while saving)
+    is skipped with a message, so the run resumes from the one before."""
     if not os.path.isdir(output_dir):
         return None
-    return get_last_checkpoint(output_dir)
+    found = []
+    for name in os.listdir(output_dir):
+        m = re.fullmatch(r"checkpoint-(\d+)", name)
+        if m and os.path.isdir(os.path.join(output_dir, name)):
+            found.append((int(m.group(1)), name))
+    for _, name in sorted(found, reverse=True):
+        path = os.path.join(output_dir, name)
+        if is_full_checkpoint(path):
+            return path
+        print(f"[resume] skipping incomplete {path}")
+    return None
 
 
 HISTORY_FIELDS = ["step", "epoch", "loss", "eval_loss", "learning_rate", "grad_norm"]
@@ -221,12 +234,71 @@ def write_history(log_history: list[dict], path: str) -> int:
     return len(rows)
 
 
-FULL_CHECKPOINT_FILES = ("trainer_state.json", "optimizer.pt", "scheduler.pt")
+def _own_generator(loader, seed: int):
+    """Give a (prepared) DataLoader a generator of its own. Starting its
+    workers draws a seed from loader.generator, or from the global RNG when it
+    has none; drawing from the global RNG would shift the dropout stream of
+    training depending on when the loader is created (a resumed run creates
+    its loaders at a different point than an uninterrupted one).
+    accelerate's wrapper iterates an inner base_dataloader, so set both."""
+    inner = getattr(loader, "base_dataloader", loader)
+    for dl in {id(loader): loader, id(inner): inner}.values():
+        dl.generator = torch.Generator().manual_seed(seed)
+    return loader
+
+
+class RecapTrainer(Trainer):
+    """Trainer that starts the evaluation dataloader's workers once and keeps
+    dataloader worker seeding out of the global RNG.
+
+    With persistent workers, transformers 4.45 caches the evaluation
+    DataLoader but passes it through accelerator.prepare() at every
+    evaluation, which builds a new loader with a new set of worker processes
+    while the accelerator keeps the old ones alive. Over a long run that is
+    num_workers more processes per evaluation (about 570 after 70 epochs with
+    8 workers), until the machine runs out of memory. Reusing the prepared
+    loader keeps one set of workers for the whole run."""
+
+    def get_eval_dataloader(self, eval_dataset=None):
+        # evaluate() passes self.eval_dataset itself, not None.
+        if eval_dataset is None or eval_dataset is self.eval_dataset:
+            key = "eval"
+        elif isinstance(eval_dataset, str):
+            key = eval_dataset
+        else:
+            key = None                      # a one-off dataset: no caching
+        if not self.args.dataloader_persistent_workers or key is None:
+            return super().get_eval_dataloader(eval_dataset)
+        prepared = self.__dict__.setdefault("_prepared_eval_dataloaders", {})
+        if key not in prepared:
+            prepared[key] = _own_generator(super().get_eval_dataloader(eval_dataset), self.args.seed)
+        return prepared[key]
+
+    def get_train_dataloader(self):
+        # Data order comes from the sampler, which the Trainer restores on
+        # resume; only the workers' seed is moved off the global RNG here.
+        return _own_generator(super().get_train_dataloader(), self.args.seed + 1)
+
+
+FULL_CHECKPOINT_FILES = ("model weights", "optimizer.pt", "scheduler.pt", "trainer_state.json")
+WEIGHT_FILES = ("model.safetensors", "pytorch_model.bin",
+                "model.safetensors.index.json", "pytorch_model.bin.index.json")
 
 
 def is_full_checkpoint(path: str) -> bool:
-    """True if PATH holds what the Trainer needs to resume training exactly."""
-    return all(os.path.isfile(os.path.join(path, f)) for f in FULL_CHECKPOINT_FILES)
+    """True if PATH holds what the Trainer needs to resume training exactly:
+    model weights, optimizer and scheduler state, and a readable
+    trainer_state.json. The Trainer writes trainer_state.json last, so a
+    checkpoint whose save was interrupted fails this check."""
+    def has(name):
+        return os.path.isfile(os.path.join(path, name))
+    if not (any(has(w) for w in WEIGHT_FILES) and has("optimizer.pt") and has("scheduler.pt")):
+        return False
+    try:
+        with open(os.path.join(path, "trainer_state.json")) as f:
+            return "global_step" in json.load(f)
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 class SnapshotCallback(TrainerCallback):
@@ -371,7 +443,7 @@ def main() -> None:
     if args.snapshot_every > 0 or args.checkpoint_every > 0:
         callbacks.append(SnapshotCallback(args.snapshot_every, args.checkpoint_every))
 
-    trainer = Trainer(
+    trainer = RecapTrainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
