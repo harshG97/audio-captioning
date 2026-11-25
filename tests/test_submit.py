@@ -18,7 +18,7 @@ SUBMIT = REPO_ROOT / "scripts" / "submit.sh"
 CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "K", "SEED", "DEDUP", "XATTN", "TRAIN_DECODER", "PROMPT_DROPOUT", "TAG",
            "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT", "KEEP", "PATIENCE",
-           "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM"]
+           "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM", "CHECKPOINT_EVERY"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -127,8 +127,12 @@ def test_resume_from_needs_a_tag_and_a_checkpoint(tmp_path):
     ckpt = tmp_path / "run" / "snapshots" / "epoch050"
     ckpt.mkdir(parents=True)
     refused = submit("run-a", tmp_path, RESUME_FROM=ckpt, TAG="from50")
-    assert refused.returncode != 0 and "not a checkpoint" in refused.stderr
+    assert refused.returncode != 0 and "not a full checkpoint" in refused.stderr
     (ckpt / "trainer_state.json").write_text("{}")
+    model_only = submit("run-a", tmp_path, RESUME_FROM=ckpt, TAG="from50")
+    assert model_only.returncode != 0 and "not a full checkpoint" in model_only.stderr
+    (ckpt / "optimizer.pt").write_text("")
+    (ckpt / "scheduler.pt").write_text("")
     no_tag = submit("run-a", tmp_path, RESUME_FROM=ckpt)
     assert no_tag.returncode != 0 and "RESUME_FROM" in no_tag.stderr
     s = settings(submit("run-a", tmp_path, RESUME_FROM=ckpt, TAG="from50", KEEP="last"))

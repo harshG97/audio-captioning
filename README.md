@@ -142,7 +142,7 @@ the run name, so a variant never reuses an existing run's folder:
 | `XATTN=28`, `14`, `7`, `3.5` or `1.75` | cross-attention size in millions of parameters (default 7, as in RECAP) | `_x28` |
 | `TRAIN_DECODER=1` | fine-tune all of GPT-2, not just the cross-attention | `_ftdec` |
 | `PROMPT_DROPOUT=0.3` | train without the retrieved captions 30% of the time | `_pd0.3` |
-| `KEEP=last` | train all `EPOCHS` (100) without early stopping and keep the last epoch, as RECAP's own `train.py` does; every `SNAPSHOT_EVERY`-th (10) epoch and the lowest-val-loss epoch are kept as full checkpoints and scored on the first eval set | `_last` |
+| `KEEP=last` | train all `EPOCHS` (100) without early stopping and keep the last epoch, as RECAP's own `train.py` does; every `CHECKPOINT_EVERY`-th (20) epoch and the lowest-val-loss epoch are kept as full checkpoints and scored on the first eval set | `_last` |
 | `TAG=<name>` | free-form label | `_<name>` |
 
 Pointing a training job at other features, caches or models (`FEAT_DIR`,
@@ -156,23 +156,25 @@ CACHE_DIR=$HOME/scratch/recap/features TAG=ds2 scripts/submit.sh run-a
 By default (`KEEP=best`) a run keeps the epoch with the lowest val loss and
 stops after `PATIENCE` epochs without improvement. `KEEP=last` keeps the
 final epoch instead (it cannot be combined with `PATIENCE`). It also keeps
-`RUN_DIR/snapshots/epoch010`, `epoch020`, ... and `snapshots/best` (the
+`RUN_DIR/snapshots/epoch020`, `epoch040`, ... and `snapshots/best` (the
 lowest val loss), each a full checkpoint with optimizer, scheduler and RNG
 state plus its own `preds_*.json` and `metrics_*.json`; the summary lists
-them, so you can see at which epoch caption quality peaks:
+them, so you can see at which epoch caption quality peaks. `CHECKPOINT_EVERY`
+changes the interval; `SNAPSHOT_EVERY=10` adds model-only snapshots in
+between (scored, but not resumable):
 
 ```bash
 KEEP=last scripts/submit.sh run-a     # a_paper_k4_last_s42
 ```
 
-`RESUME_FROM=<checkpoint folder>` starts a new run from any of these (or a
-`checkpoint-N` folder) with its optimizer, scheduler and step count, and
+`RESUME_FROM=<checkpoint folder>` starts a new run from any full checkpoint
+(or a `checkpoint-N` folder) with its optimizer, scheduler and step count, and
 needs a `TAG`. With the same settings it continues exactly where that run
 was; the learning-rate schedule follows `EPOCHS`.
 
 ```bash
-RESUME_FROM=$HOME/scratch/recap/runs/a_paper_k4_last_s42/snapshots/epoch050 \
-    TAG=from50 KEEP=last scripts/submit.sh run-a
+RESUME_FROM=$HOME/scratch/recap/runs/a_paper_k4_last_s42/snapshots/epoch040 \
+    TAG=from40 KEEP=last scripts/submit.sh run-a
 ```
 
 `SEED` sets the cross-attention initialisation and the data order. Two runs

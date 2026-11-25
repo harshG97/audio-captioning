@@ -50,13 +50,18 @@ DECODER_NAME=${DECODER_NAME:-gpt2}
 XATTN=${XATTN:-7}             # cross-attention size in millions: 28 14 7 3.5 1.75
 TRAIN_DECODER=${TRAIN_DECODER:-0}   # 1 = fine-tune all of GPT-2 too
 # best: keep the epoch with the lowest val loss (early stopping if PATIENCE>0).
-# last: train all EPOCHS and keep the last, as RECAP's own code does, saving a
-# snapshot every SNAPSHOT_EVERY epochs plus the lowest-val-loss epoch
-# (snapshots/best); all are full checkpoints, scored on the first eval set.
+# last: train all EPOCHS and keep the last, as RECAP's own code does. Every
+# CHECKPOINT_EVERY-th epoch (20) and the lowest-val-loss epoch (snapshots/best)
+# are kept as full, resumable checkpoints in snapshots/, and scored on the
+# first eval set. SNAPSHOT_EVERY=N adds model-only snapshots (off by default).
 # RESUME_FROM=<checkpoint folder> starts this run from another run's checkpoint.
 RESUME_FROM=${RESUME_FROM:-}
 KEEP=${KEEP:-best}
-if [ "$KEEP" = last ]; then SNAPSHOT_EVERY=${SNAPSHOT_EVERY:-10}; else SNAPSHOT_EVERY=${SNAPSHOT_EVERY:-0}; fi
+if [ "$KEEP" = last ]; then
+    SNAPSHOT_EVERY=${SNAPSHOT_EVERY:-0}; CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-20}
+else
+    SNAPSHOT_EVERY=${SNAPSHOT_EVERY:-0}; CHECKPOINT_EVERY=${CHECKPOINT_EVERY:-0}
+fi
 # Space-separated name:csv:split triples; split picks the HDF5 and cache files.
 EVAL_SETS=${EVAL_SETS:-val:$DATA_DIR/val.csv:val}
 WORKERS=${SLURM_CPUS_PER_TASK:-8}
@@ -93,8 +98,8 @@ settings=$(printf '%s\n' "K=$K" "CACHE_K=$CACHE_K" "CACHE_VARIANT=$CACHE_VARIANT
     "XATTN=$XATTN" "TRAIN_DECODER=$TRAIN_DECODER")
 # Recorded only when not the default, so folders started before these
 # settings existed still match.
-if [ "$KEEP" != best ] || [ "$SNAPSHOT_EVERY" != 0 ]; then
-    settings+=$'\n'"KEEP=$KEEP"$'\n'"SNAPSHOT_EVERY=$SNAPSHOT_EVERY"
+if [ "$KEEP" != best ] || [ "$SNAPSHOT_EVERY" != 0 ] || [ "$CHECKPOINT_EVERY" != 0 ]; then
+    settings+=$'\n'"KEEP=$KEEP"$'\n'"SNAPSHOT_EVERY=$SNAPSHOT_EVERY"$'\n'"CHECKPOINT_EVERY=$CHECKPOINT_EVERY"
 fi
 [ -z "$RESUME_FROM" ] || settings+=$'\n'"RESUME_FROM=$RESUME_FROM"
 if [ -f "$RUN_DIR/settings.txt" ]; then
@@ -112,7 +117,7 @@ echo "host: $(hostname)  job: ${SLURM_JOB_ID:-local}  start: $(date)"
 echo "run: $RUN_DIR"
 cache_label=top${CACHE_K}${CACHE_VARIANT}
 [ "$K" -eq 0 ] && cache_label=empty
-echo "encoder=$ENCODER_NAME decoder=$DECODER_NAME xattn=${XATTN}M train_decoder=$TRAIN_DECODER keep=$KEEP snapshot_every=$SNAPSHOT_EVERY"
+echo "encoder=$ENCODER_NAME decoder=$DECODER_NAME xattn=${XATTN}M train_decoder=$TRAIN_DECODER keep=$KEEP snapshot_every=$SNAPSHOT_EVERY checkpoint_every=$CHECKPOINT_EVERY"
 echo "K=$K cache=$cache_label epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
 echo "train csv: $DATA_DIR/train.csv  features: $FEAT_DIR  caches: $CACHE_DIR"
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| cuda', torch.cuda.is_available())"
@@ -166,7 +171,7 @@ step train python train.py \
     --num_train_epochs "$EPOCHS" --per_device_train_batch_size "$BATCH" \
     --per_device_eval_batch_size "$BATCH" --learning_rate "$LR" --seed "$SEED" \
     --eval_save_strategy epoch "${BEST_ARGS[@]}" --save_total_limit 2 \
-    --snapshot_every "$SNAPSHOT_EVERY" "${EARLY_ARGS[@]}" --resume --bf16 --num_workers "$WORKERS"
+    --snapshot_every "$SNAPSHOT_EVERY" --checkpoint_every "$CHECKPOINT_EVERY" "${EARLY_ARGS[@]}" --resume --bf16 --num_workers "$WORKERS"
 
 SPICE_ARGS=()
 [ "$SKIP_SPICE" = 1 ] && SPICE_ARGS=(--skip_spice)

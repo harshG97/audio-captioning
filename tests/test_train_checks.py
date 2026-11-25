@@ -54,20 +54,35 @@ def _save(callback, run_dir, epoch, step):
                      None)
 
 
-def test_snapshot_keeps_every_nth_epoch_as_a_full_checkpoint(tmp_path):
-    cb = train.SnapshotCallback(every=10)
-    for epoch in range(1, 21):
-        _checkpoint(tmp_path, epoch * 7)
-        _save(cb, tmp_path, float(epoch), epoch * 7)
-    snaps = sorted(p.name for p in (tmp_path / "snapshots").iterdir())
-    assert snaps == ["epoch010", "epoch020"]
-    kept = sorted(p.name for p in (tmp_path / "snapshots" / "epoch010").iterdir())
-    assert kept == sorted(p.name for p in (tmp_path / "checkpoint-70").iterdir())
-    assert "optimizer.pt" in kept and "scheduler.pt" in kept and "rng_state.pth" in kept
+def _run_epochs(cb, run_dir, n):
+    for epoch in range(1, n + 1):
+        _checkpoint(run_dir, epoch * 7)
+        _save(cb, run_dir, float(epoch), epoch * 7)
+    return sorted(p.name for p in (run_dir / "snapshots").iterdir())
+
+
+def test_full_checkpoints_only(tmp_path):
+    """The KEEP=last default: every 20th epoch, as a resumable checkpoint."""
+    assert _run_epochs(train.SnapshotCallback(every=0, full_every=20), tmp_path, 45) == \
+        ["epoch020", "epoch040"]
+    kept = sorted(p.name for p in (tmp_path / "snapshots" / "epoch020").iterdir())
+    assert kept == sorted(p.name for p in (tmp_path / "checkpoint-140").iterdir())
+    assert train.is_full_checkpoint(str(tmp_path / "snapshots" / "epoch020"))
+
+
+def test_model_snapshots_between_full_checkpoints(tmp_path):
+    cb = train.SnapshotCallback(every=10, full_every=20)
+    assert _run_epochs(cb, tmp_path, 40) == ["epoch010", "epoch020", "epoch030", "epoch040"]
+    snaps = tmp_path / "snapshots"
+    model_only = sorted(p.name for p in (snaps / "epoch010").iterdir())
+    assert model_only == ["config.json", "model.safetensors", "tokenizer.json", "trainer_state.json"]
+    assert not train.is_full_checkpoint(str(snaps / "epoch030"))
+    assert train.is_full_checkpoint(str(snaps / "epoch020"))
+    assert train.is_full_checkpoint(str(snaps / "epoch040"))
 
 
 def test_snapshot_is_not_overwritten_on_resume(tmp_path):
-    cb = train.SnapshotCallback(every=2)
+    cb = train.SnapshotCallback(full_every=2)
     _checkpoint(tmp_path, 4)
     _save(cb, tmp_path, 2.0, 4)
     marker = tmp_path / "snapshots" / "epoch002" / "config.json"
@@ -77,7 +92,7 @@ def test_snapshot_is_not_overwritten_on_resume(tmp_path):
 
 
 def test_snapshot_skips_other_processes(tmp_path):
-    cb = train.SnapshotCallback(every=1)
+    cb = train.SnapshotCallback(every=1, full_every=1)
     _checkpoint(tmp_path, 3)
     cb.on_save(SimpleNamespace(output_dir=str(tmp_path)),
                SimpleNamespace(epoch=1.0, global_step=3, is_world_process_zero=False), None)
@@ -88,14 +103,19 @@ REQUIRED = ["--train_csv", "t.csv", "--train_hdf5", "t.h5", "--train_retrieval_c
             "--output_dir", "out", "--retrieval_k", "4", "--retrieval_strategy", "topk"]
 
 
-def test_snapshot_every_needs_epoch_saves(monkeypatch):
-    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--snapshot_every", "10",
+@pytest.mark.parametrize("flag", ["--snapshot_every", "--checkpoint_every"])
+def test_snapshot_flags_need_epoch_saves(monkeypatch, flag):
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, flag, "10",
                                       "--eval_save_strategy", "steps"])
     with pytest.raises(SystemExit):
         train.parse_args()
-    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--snapshot_every", "10",
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, flag, "-1",
                                       "--eval_save_strategy", "epoch"])
-    assert train.parse_args().snapshot_every == 10
+    with pytest.raises(SystemExit):
+        train.parse_args()
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, flag, "10",
+                                      "--eval_save_strategy", "epoch"])
+    assert getattr(train.parse_args(), flag.lstrip("-")) == 10
 
 
 def test_keep_best_checkpoint_copies_and_replaces(tmp_path):
@@ -117,8 +137,15 @@ def test_keep_best_checkpoint_without_a_best(tmp_path):
     assert not (tmp_path / "snapshots").exists()
 
 
-def test_resume_from_must_be_a_checkpoint(monkeypatch, tmp_path):
+def test_resume_from_must_be_a_full_checkpoint(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--resume_from", str(tmp_path)])
+    with pytest.raises(SystemExit):
+        train.parse_args()
+    model_only = tmp_path / "model_only"
+    model_only.mkdir()
+    for name in ["trainer_state.json", "model.safetensors", "config.json"]:
+        (model_only / name).write_text(name)
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--resume_from", str(model_only)])
     with pytest.raises(SystemExit):
         train.parse_args()
     ckpt = _checkpoint(tmp_path, 5)

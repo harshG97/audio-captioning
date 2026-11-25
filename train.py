@@ -124,10 +124,16 @@ def parse_args() -> argparse.Namespace:
              "0 disables (default). Needs --load_best_model_at_end.")
     p.add_argument(
         "--snapshot_every", type=int, default=0,
-        help="Also keep every N-th epoch's checkpoint in OUTPUT_DIR/snapshots/epochNNN, "
-             "safe from --save_total_limit. Snapshots are full checkpoints: "
-             "evaluate.py can load them and --resume_from can continue from "
-             "them. 0 disables (default). Needs --eval_save_strategy epoch.")
+        help="Also keep every N-th epoch's model in OUTPUT_DIR/snapshots/epochNNN, "
+             "safe from --save_total_limit, for evaluate.py. Model and tokenizer "
+             "only, unless the epoch is also a --checkpoint_every epoch. "
+             "0 disables (default). Needs --eval_save_strategy epoch.")
+    p.add_argument(
+        "--checkpoint_every", type=int, default=0,
+        help="Keep every N-th epoch as a full checkpoint (optimizer, scheduler "
+             "and RNG state too) in OUTPUT_DIR/snapshots/epochNNN, so "
+             "--resume_from can continue from it. 0 disables (default). "
+             "Needs --eval_save_strategy epoch.")
     p.add_argument(
         "--resume", action="store_true",
         help="If --output_dir already holds checkpoint-* folders, continue "
@@ -149,12 +155,15 @@ def parse_args() -> argparse.Namespace:
 
     if args.early_stopping_patience > 0 and not args.load_best_model_at_end:
         p.error("--early_stopping_patience needs --load_best_model_at_end")
-    if args.snapshot_every < 0:
-        p.error("--snapshot_every must be 0 or more")
-    if args.snapshot_every > 0 and args.eval_save_strategy != "epoch":
-        p.error("--snapshot_every needs --eval_save_strategy epoch")
-    if args.resume_from and not os.path.isfile(os.path.join(args.resume_from, "trainer_state.json")):
-        p.error(f"--resume_from {args.resume_from} is not a checkpoint folder (no trainer_state.json)")
+    for flag in ("snapshot_every", "checkpoint_every"):
+        if getattr(args, flag) < 0:
+            p.error(f"--{flag} must be 0 or more")
+        if getattr(args, flag) > 0 and args.eval_save_strategy != "epoch":
+            p.error(f"--{flag} needs --eval_save_strategy epoch")
+    if args.resume_from and not is_full_checkpoint(args.resume_from):
+        p.error(f"--resume_from {args.resume_from} is not a full checkpoint "
+                f"(needs {', '.join(FULL_CHECKPOINT_FILES)}); snapshots between "
+                f"--checkpoint_every epochs hold the model only")
     if args.track_best and not args.val_csv:
         p.error("--track_best needs a validation set (--val_csv)")
 
@@ -212,25 +221,40 @@ def write_history(log_history: list[dict], path: str) -> int:
     return len(rows)
 
 
-class SnapshotCallback(TrainerCallback):
-    """Copies the checkpoint saved at every N-th epoch to
-    OUTPUT_DIR/snapshots/epochNNN so --save_total_limit cannot prune it. The
-    copy is a full checkpoint (optimizer, scheduler and RNG state included):
-    evaluate.py loads it like a finished run, and --resume_from continues
-    training from it."""
+FULL_CHECKPOINT_FILES = ("trainer_state.json", "optimizer.pt", "scheduler.pt")
 
-    def __init__(self, every: int):
+
+def is_full_checkpoint(path: str) -> bool:
+    """True if PATH holds what the Trainer needs to resume training exactly."""
+    return all(os.path.isfile(os.path.join(path, f)) for f in FULL_CHECKPOINT_FILES)
+
+
+class SnapshotCallback(TrainerCallback):
+    """Copies the checkpoint saved at chosen epochs to
+    OUTPUT_DIR/snapshots/epochNNN so --save_total_limit cannot prune it:
+    every `every`-th epoch with the model and tokenizer only (for
+    evaluate.py), and every `full_every`-th epoch as a full checkpoint that
+    --resume_from can continue from. 0 turns either off."""
+
+    MODEL_ONLY_SKIP = ("optimizer.pt", "scheduler.pt", "scaler.pt", "rng_state*.pth")
+
+    def __init__(self, every: int = 0, full_every: int = 0):
         self.every = every
+        self.full_every = full_every
 
     def on_save(self, args, state, control, **kwargs):
         epoch = round(state.epoch or 0)
-        if not state.is_world_process_zero or epoch == 0 or epoch % self.every:
+        if not state.is_world_process_zero or epoch == 0:
+            return
+        full = self.full_every > 0 and epoch % self.full_every == 0
+        if not full and not (self.every > 0 and epoch % self.every == 0):
             return
         src = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
         dst = os.path.join(args.output_dir, "snapshots", f"epoch{epoch:03d}")
         if os.path.isdir(src) and not os.path.exists(dst):
-            shutil.copytree(src, dst)
-            print(f"[snapshot] epoch {epoch} -> {dst}")
+            ignore = None if full else shutil.ignore_patterns(*self.MODEL_ONLY_SKIP)
+            shutil.copytree(src, dst, ignore=ignore)
+            print(f"[snapshot] epoch {epoch} -> {dst} ({'full checkpoint' if full else 'model only'})")
 
 
 def feature_width(hdf5_path: str) -> int:
@@ -344,8 +368,8 @@ def main() -> None:
     callbacks = []
     if args.early_stopping_patience > 0:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience))
-    if args.snapshot_every > 0:
-        callbacks.append(SnapshotCallback(args.snapshot_every))
+    if args.snapshot_every > 0 or args.checkpoint_every > 0:
+        callbacks.append(SnapshotCallback(args.snapshot_every, args.checkpoint_every))
 
     trainer = Trainer(
         model=model,
