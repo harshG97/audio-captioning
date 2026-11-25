@@ -17,7 +17,8 @@ SUBMIT = REPO_ROOT / "scripts" / "submit.sh"
 # Variables a developer's shell may have exported that would change the result.
 CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "K", "SEED", "DEDUP", "XATTN", "TRAIN_DECODER", "PROMPT_DROPOUT", "TAG",
-           "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT"]
+           "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT", "KEEP", "PATIENCE",
+           "SNAPSHOT_EVERY", "EPOCHS"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -57,13 +58,17 @@ def test_default_run_names_unchanged(tmp_path, job, env_vars, name):
     ({"PROMPT_DROPOUT": 0.3}, "a_paper_k4_pd0.3_s42"),
     ({"PROMPT_DROPOUT": "0.0"}, "a_paper_k4_s42"),
     ({"DEDUP": 1, "XATTN": 14, "TAG": "try1"}, "a_paper_k4_dedup_x14_try1_s42"),
+    ({"KEEP": "last"}, "a_paper_k4_last_s42"),
+    ({"KEEP": "best"}, "a_paper_k4_s42"),
+    ({"KEEP": "last", "XATTN": 28}, "a_paper_k4_x28_last_s42"),
 ])
 def test_variant_suffixes(tmp_path, env_vars, name):
     assert settings(submit("run-a", tmp_path, **env_vars))["RUN_NAME"] == name
 
 
 @pytest.mark.parametrize("env_vars", [
-    {"XATTN": 5}, {"TRAIN_DECODER": "yes"}, {"PROMPT_DROPOUT": "abc"},
+    {"XATTN": 5}, {"TRAIN_DECODER": "yes"}, {"KEEP": "first"},
+    {"KEEP": "last", "PATIENCE": 5}, {"PROMPT_DROPOUT": "abc"},
     {"PROMPT_DROPOUT": 2}, {"TAG": "has space"}, {"TAG": "a/b"},
 ])
 def test_bad_values_are_refused(tmp_path, env_vars):
@@ -109,3 +114,10 @@ def test_preprocessing_takes_a_feat_dir_without_a_tag(tmp_path):
                         CLAP="laion/clap-htsat-unfused"))
     assert s["FEAT_DIR"] == str(tmp_path / "f2")
     assert s["CLAP"] == "laion/clap-htsat-unfused"
+
+
+def test_keep_last_turns_off_early_stopping(tmp_path):
+    assert settings(submit("run-a", tmp_path))["PATIENCE"] == "5"
+    s = settings(submit("run-a", tmp_path, KEEP="last"))
+    assert s["PATIENCE"] == "0" and s["KEEP"] == "last" and s["EPOCHS"] == "100"
+    assert settings(submit("run-a", tmp_path, KEEP="last", PATIENCE=0))["PATIENCE"] == "0"

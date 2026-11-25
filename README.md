@@ -142,6 +142,7 @@ the run name, so a variant never reuses an existing run's folder:
 | `XATTN=28`, `14`, `7`, `3.5` or `1.75` | cross-attention size in millions of parameters (default 7, as in RECAP) | `_x28` |
 | `TRAIN_DECODER=1` | fine-tune all of GPT-2, not just the cross-attention | `_ftdec` |
 | `PROMPT_DROPOUT=0.3` | train without the retrieved captions 30% of the time | `_pd0.3` |
+| `KEEP=last` | train all `EPOCHS` (100) without early stopping and keep the last epoch, as RECAP's own `train.py` does; a snapshot every `SNAPSHOT_EVERY` (10) epochs is scored on the first eval set | `_last` |
 | `TAG=<name>` | free-form label | `_<name>` |
 
 Pointing a training job at other features, caches or models (`FEAT_DIR`,
@@ -150,6 +151,17 @@ to train on the paper split but retrieve from the full 2.0 caption list:
 
 ```bash
 CACHE_DIR=$HOME/scratch/recap/features TAG=ds2 scripts/submit.sh run-a
+```
+
+By default (`KEEP=best`) a run keeps the epoch with the lowest val loss and
+stops after `PATIENCE` epochs without improvement. `KEEP=last` keeps the
+final epoch instead (it cannot be combined with `PATIENCE`); its snapshots
+sit in `RUN_DIR/snapshots/epochNNN` with their own `preds_*.json` and
+`metrics_*.json`, and the summary lists them, so you can see at which epoch
+caption quality peaks:
+
+```bash
+KEEP=last scripts/submit.sh run-a     # a_paper_k4_last_s42
 ```
 
 Each run folder records its settings in `settings.txt`; resubmitting with

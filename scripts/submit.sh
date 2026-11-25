@@ -27,6 +27,9 @@
 #   XATTN=28|14|7|3.5|1.75   cross-attention size in millions (default 7)  -> _x28
 #   TRAIN_DECODER=1          fine-tune all of GPT-2, not just cross-attention -> _ftdec
 #   PROMPT_DROPOUT=0.3       train without the retrieved captions 30% of the time -> _pd0.3
+#   KEEP=last                train all EPOCHS without early stopping and keep the
+#                            last epoch, as RECAP's code does; snapshots every
+#                            SNAPSHOT_EVERY (10) epochs are scored on val -> _last
 # Pointing a training job at other features, caches or models needs a TAG,
 # which is appended to the run name (TAG=ds2 -> a_paper_k4_ds2_s42):
 #   FEAT_DIR, CACHE_DIR, ENCODER_NAME, DECODER_NAME
@@ -51,6 +54,7 @@ ORIG_FEAT_DIR=${FEAT_DIR:-}
 ORIG_CACHE_DIR=${CACHE_DIR:-}
 ORIG_ENCODER_NAME=${ENCODER_NAME:-}
 ORIG_DECODER_NAME=${DECODER_NAME:-}
+ORIG_PATIENCE=${PATIENCE:-}
 
 usage() {
     cat <<'EOF'
@@ -115,6 +119,11 @@ if [ -n "${PROMPT_DROPOUT:-}" ]; then
     [[ $PROMPT_DROPOUT =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]] || { echo "PROMPT_DROPOUT must be a number from 0 to 1 (got $PROMPT_DROPOUT)" >&2; exit 1; }
     awk -v p="$PROMPT_DROPOUT" 'BEGIN { exit (p + 0 == 0) }' && VARIANT+="_pd$PROMPT_DROPOUT"
 fi
+case ${KEEP:-best} in
+    best) ;;
+    last) VARIANT+="_last" ;;
+    *) echo "KEEP must be best or last (got $KEEP)" >&2; exit 1 ;;
+esac
 if [ -n "${TAG:-}" ]; then
     [[ $TAG =~ ^[A-Za-z0-9.-]+$ ]] || { echo "TAG may only use letters, digits, . and - (got $TAG)" >&2; exit 1; }
     VARIANT+="_$TAG"
@@ -154,6 +163,15 @@ case $job in
         echo "unknown job: $job" >&2; usage >&2; exit 1 ;;
 esac
 
+# KEEP=last trains every epoch, so early stopping is off.
+if [ "${KEEP:-best}" = last ] && [ "$script" = scripts/phoenix_train.sbatch ]; then
+    if [ -n "$ORIG_PATIENCE" ] && [ "$ORIG_PATIENCE" != 0 ]; then
+        echo "KEEP=last trains every epoch; it cannot be combined with PATIENCE=$ORIG_PATIENCE" >&2
+        exit 1
+    fi
+    export PATIENCE=0
+fi
+
 # A training job pointed at other features, caches or models must say so in
 # its run name; otherwise it would reuse (and skip) an existing run's steps.
 if [ "$script" = scripts/phoenix_train.sbatch ] && [ -z "${TAG:-}" ]; then
@@ -185,7 +203,7 @@ if [ "$LOCAL" = 1 ]; then
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|ENCODER_NAME|DECODER_NAME|CLAP|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|ENCODER_NAME|DECODER_NAME|CLAP|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -200,7 +218,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|ENCODER_NAME|DECODER_NAME|CLAP)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|ENCODER_NAME|DECODER_NAME|CLAP)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

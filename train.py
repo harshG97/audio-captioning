@@ -12,11 +12,12 @@ import argparse
 import contextlib
 import csv
 import os
+import shutil
 
 import h5py
 import numpy as np
 import torch
-from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
+from transformers import EarlyStoppingCallback, Trainer, TrainerCallback, TrainingArguments
 from transformers.trainer_utils import get_last_checkpoint
 
 from data.access_id import DATASETS
@@ -122,6 +123,11 @@ def parse_args() -> argparse.Namespace:
         help="Stop after this many evaluations without a lower eval_loss. "
              "0 disables (default). Needs --load_best_model_at_end.")
     p.add_argument(
+        "--snapshot_every", type=int, default=0,
+        help="Also keep every N-th epoch's model in OUTPUT_DIR/snapshots/epochNNN "
+             "(model and tokenizer only), safe from --save_total_limit. "
+             "0 disables (default). Needs --eval_save_strategy epoch.")
+    p.add_argument(
         "--resume", action="store_true",
         help="If --output_dir already holds checkpoint-* folders, continue "
              "from the latest one (optimizer, scheduler, RNG and step count "
@@ -131,6 +137,10 @@ def parse_args() -> argparse.Namespace:
 
     if args.early_stopping_patience > 0 and not args.load_best_model_at_end:
         p.error("--early_stopping_patience needs --load_best_model_at_end")
+    if args.snapshot_every < 0:
+        p.error("--snapshot_every must be 0 or more")
+    if args.snapshot_every > 0 and args.eval_save_strategy != "epoch":
+        p.error("--snapshot_every needs --eval_save_strategy epoch")
 
     # Resolve attention-size flags.
     if args.attention_size is not None:
@@ -184,6 +194,28 @@ def write_history(log_history: list[dict], path: str) -> int:
         w.writeheader()
         w.writerows(rows)
     return len(rows)
+
+
+class SnapshotCallback(TrainerCallback):
+    """Copies the checkpoint saved at every N-th epoch to
+    OUTPUT_DIR/snapshots/epochNNN, leaving out the optimizer, scheduler and
+    RNG state, so --save_total_limit cannot prune it and evaluate.py can load
+    it like a finished run."""
+
+    SKIP = ("optimizer.pt", "scheduler.pt", "scaler.pt", "rng_state*.pth")
+
+    def __init__(self, every: int):
+        self.every = every
+
+    def on_save(self, args, state, control, **kwargs):
+        epoch = round(state.epoch or 0)
+        if not state.is_world_process_zero or epoch == 0 or epoch % self.every:
+            return
+        src = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        dst = os.path.join(args.output_dir, "snapshots", f"epoch{epoch:03d}")
+        if os.path.isdir(src) and not os.path.exists(dst):
+            shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*self.SKIP))
+            print(f"[snapshot] epoch {epoch} -> {dst}")
 
 
 def feature_width(hdf5_path: str) -> int:
@@ -291,6 +323,12 @@ def main() -> None:
         report_to=["none"],
     )
 
+    callbacks = []
+    if args.early_stopping_patience > 0:
+        callbacks.append(EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience))
+    if args.snapshot_every > 0:
+        callbacks.append(SnapshotCallback(args.snapshot_every))
+
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -298,10 +336,7 @@ def main() -> None:
         eval_dataset=eval_ds,
         data_collator=collator,
         tokenizer=tokenizer,
-        callbacks=(
-            [EarlyStoppingCallback(early_stopping_patience=args.early_stopping_patience)]
-            if args.early_stopping_patience > 0 else None
-        ),
+        callbacks=callbacks or None,
     )
 
     resume_from = resume_checkpoint(args.output_dir) if args.resume else None
