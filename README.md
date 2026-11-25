@@ -132,6 +132,47 @@ in its output folder and training resumes from its last checkpoint
 up where the job stopped. On `l40s` nodes PACE allows at most 4 CPUs per
 GPU; `submit.sh` caps it.
 
+#### Experiment settings
+
+Training jobs take these settings; each non-default value adds a suffix to
+the run name, so a variant never reuses an existing run's folder:
+
+| Setting | Effect | Run-name suffix |
+|---|---|---|
+| `XATTN=28`, `14`, `7`, `3.5` or `1.75` | cross-attention size in millions of parameters (default 7, as in RECAP) | `_x28` |
+| `TRAIN_DECODER=1` | fine-tune all of GPT-2, not just the cross-attention | `_ftdec` |
+| `PROMPT_DROPOUT=0.3` | train without the retrieved captions 30% of the time | `_pd0.3` |
+| `TAG=<name>` | free-form label | `_<name>` |
+
+Pointing a training job at other features, caches or models (`FEAT_DIR`,
+`CACHE_DIR`, `ENCODER_NAME`, `DECODER_NAME`) requires a `TAG`. For example,
+to train on the paper split but retrieve from the full 2.0 caption list:
+
+```bash
+CACHE_DIR=$HOME/scratch/recap/features TAG=ds2 scripts/submit.sh run-a
+```
+
+Each run folder records its settings in `settings.txt`; resubmitting with
+different settings stops with a diff instead of reusing finished steps.
+
+Preprocessing takes `CLAP=<checkpoint>` (default `laion/clap-htsat-fused`)
+for both the cross-attention features and the retrieval embeddings, and
+records it in `$FEAT_DIR/clap.txt`; mixing checkpoints in one folder is
+refused, and training jobs read the encoder name from that file. To build
+another checkpoint's features for the paper split only (about half the
+clips of the full set):
+
+```bash
+CLAP=laion/clap-htsat-unfused FEAT_DIR=$HOME/scratch/recap/features_unfused \
+    DATA_DIR=data/paper_split scripts/submit.sh preprocess
+FEAT_DIR=$HOME/scratch/recap/features_unfused CACHE_DIR=$HOME/scratch/recap/features_unfused \
+    TAG=unfused scripts/submit.sh run-a
+```
+
+Cross-attention reads the encoder features at the decoder's width with no
+projection, so the encoder and decoder must have the same width (768 for
+CLAP HTSAT-base and GPT-2 small); `train.py` stops early if they differ.
+
 ### Running on a single GPU machine (no Slurm)
 
 On a machine without Slurm, such as a cloud GPU instance, `LOCAL=1` runs the

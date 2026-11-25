@@ -22,6 +22,20 @@
 # the run name gets a _dedup suffix so both versions sit side by side.
 # DRY_RUN=1 prints the sbatch command instead of submitting.
 #
+# Experiment settings (training jobs). Each non-default value adds a suffix
+# to the run name, so a variant never lands in an existing run's folder:
+#   XATTN=28|14|7|3.5|1.75   cross-attention size in millions (default 7)  -> _x28
+#   TRAIN_DECODER=1          fine-tune all of GPT-2, not just cross-attention -> _ftdec
+#   PROMPT_DROPOUT=0.3       train without the retrieved captions 30% of the time -> _pd0.3
+# Pointing a training job at other features, caches or models needs a TAG,
+# which is appended to the run name (TAG=ds2 -> a_paper_k4_ds2_s42):
+#   FEAT_DIR, CACHE_DIR, ENCODER_NAME, DECODER_NAME
+#   CACHE_DIR=$HOME/scratch/recap/features TAG=ds2 scripts/submit.sh run-a
+# Preprocessing takes CLAP=<checkpoint> (default laion/clap-htsat-fused) and
+# refuses to mix checkpoints in one FEAT_DIR, e.g. for the paper split only:
+#   CLAP=laion/clap-htsat-unfused FEAT_DIR=$HOME/scratch/recap/features_unfused \
+#   DATA_DIR=data/paper_split scripts/submit.sh preprocess
+#
 # LOCAL=1 runs the job right here instead of submitting it, for a single GPU
 # machine without Slurm (a cloud instance, say). Activate the conda env
 # first and set AUDIO_DIR for the preprocessing jobs; RECAP_ACCOUNT is not
@@ -31,6 +45,12 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+# Values given by the caller, before any defaults are filled in below.
+ORIG_FEAT_DIR=${FEAT_DIR:-}
+ORIG_CACHE_DIR=${CACHE_DIR:-}
+ORIG_ENCODER_NAME=${ENCODER_NAME:-}
+ORIG_DECODER_NAME=${DECODER_NAME:-}
 
 usage() {
     cat <<'EOF'
@@ -76,6 +96,30 @@ if [ "${DEDUP:-0}" = 1 ]; then
     DEDUP_SUFFIX=_dedup
 fi
 
+# Run-name suffix for the experiment settings (empty with the defaults, so
+# existing run names are unchanged).
+VARIANT=""
+if [ -n "${XATTN:-}" ]; then
+    case $XATTN in
+        28|14|7|3.5|1.75) ;;
+        *) echo "XATTN must be one of 28 14 7 3.5 1.75 (got $XATTN)" >&2; exit 1 ;;
+    esac
+    [ "$XATTN" = 7 ] || VARIANT+="_x$XATTN"
+fi
+case ${TRAIN_DECODER:-0} in
+    0) ;;
+    1) VARIANT+="_ftdec" ;;
+    *) echo "TRAIN_DECODER must be 0 or 1 (got $TRAIN_DECODER)" >&2; exit 1 ;;
+esac
+if [ -n "${PROMPT_DROPOUT:-}" ]; then
+    [[ $PROMPT_DROPOUT =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]] || { echo "PROMPT_DROPOUT must be a number from 0 to 1 (got $PROMPT_DROPOUT)" >&2; exit 1; }
+    awk -v p="$PROMPT_DROPOUT" 'BEGIN { exit (p + 0 == 0) }' && VARIANT+="_pd$PROMPT_DROPOUT"
+fi
+if [ -n "${TAG:-}" ]; then
+    [[ $TAG =~ ^[A-Za-z0-9.-]+$ ]] || { echo "TAG may only use letters, digits, . and - (got $TAG)" >&2; exit 1; }
+    VARIANT+="_$TAG"
+fi
+
 case $job in
     preprocess)
         script=scripts/phoenix_preprocess.sbatch; time=08:00:00 ;;
@@ -84,31 +128,47 @@ case $job in
         export REUSE_FROM=$FEAT_DIR FEAT_DIR=$PAPER_FEAT DATA_DIR=data/paper_split ;;
     g1)
         script=scripts/phoenix_train.sbatch; time=03:00:00
-        export RUN_NAME=${RUN_NAME:-g1_k0_s$SEED} K=${K:-0} EPOCHS=${EPOCHS:-1} \
+        export RUN_NAME=${RUN_NAME:-g1_k${K:-0}${VARIANT}_s$SEED} K=${K:-0} EPOCHS=${EPOCHS:-1} \
                DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-1} ;;
     g2)
         script=scripts/phoenix_train.sbatch; time=06:00:00
-        export RUN_NAME=${RUN_NAME:-g2_k${K:-4}${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-3} \
+        export RUN_NAME=${RUN_NAME:-g2_k${K:-4}${DEDUP_SUFFIX}${VARIANT}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-3} \
                DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-1} ;;
     run-a)
         script=scripts/phoenix_train.sbatch; time=24:00:00
-        export RUN_NAME=${RUN_NAME:-a_paper_k${K:-4}${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
-               PATIENCE=${PATIENCE:-5} DATA_DIR=data/paper_split CACHE_DIR=$PAPER_FEAT \
+        export RUN_NAME=${RUN_NAME:-a_paper_k${K:-4}${DEDUP_SUFFIX}${VARIANT}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
+               PATIENCE=${PATIENCE:-5} DATA_DIR=data/paper_split CACHE_DIR=${CACHE_DIR:-$PAPER_FEAT} \
                SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/paper_split/val.csv:val test:data/paper_split/test.csv:test" ;;
     run-b)
         script=scripts/phoenix_train.sbatch; time=24:00:00
-        export RUN_NAME=${RUN_NAME:-b_full_k${K:-4}${DEDUP_SUFFIX}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
+        export RUN_NAME=${RUN_NAME:-b_full_k${K:-4}${DEDUP_SUFFIX}${VARIANT}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
                PATIENCE=${PATIENCE:-5} DATA_DIR=data SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/val.csv:val test:data/test.csv:test papertest:data/paper_split/test.csv:test" ;;
     run-c)
         script=scripts/phoenix_train.sbatch; time=24:00:00
-        export RUN_NAME=${RUN_NAME:-c_paper_k0_s$SEED} K=${K:-0} EPOCHS=${EPOCHS:-100} \
+        export RUN_NAME=${RUN_NAME:-c_paper_k${K:-0}${VARIANT}_s$SEED} K=${K:-0} EPOCHS=${EPOCHS:-100} \
                PATIENCE=${PATIENCE:-5} DATA_DIR=data/paper_split SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/paper_split/val.csv:val test:data/paper_split/test.csv:test" ;;
     *)
         echo "unknown job: $job" >&2; usage >&2; exit 1 ;;
 esac
+
+# A training job pointed at other features, caches or models must say so in
+# its run name; otherwise it would reuse (and skip) an existing run's steps.
+if [ "$script" = scripts/phoenix_train.sbatch ] && [ -z "${TAG:-}" ]; then
+    default_cache=$FEAT_DIR
+    [ "$job" = run-a ] && default_cache=$PAPER_FEAT
+    overridden=()
+    [ -n "$ORIG_FEAT_DIR" ] && [ "${ORIG_FEAT_DIR%/}" != "$SCRATCH_RECAP/features" ] && overridden+=(FEAT_DIR)
+    [ -n "$ORIG_CACHE_DIR" ] && [ "${ORIG_CACHE_DIR%/}" != "$default_cache" ] && overridden+=(CACHE_DIR)
+    [ -n "$ORIG_ENCODER_NAME" ] && [ "$ORIG_ENCODER_NAME" != laion/clap-htsat-fused ] && overridden+=(ENCODER_NAME)
+    [ -n "$ORIG_DECODER_NAME" ] && [ "$ORIG_DECODER_NAME" != gpt2 ] && overridden+=(DECODER_NAME)
+    if [ ${#overridden[@]} -gt 0 ]; then
+        echo "${overridden[*]} set: also set TAG=<name> so this variant gets its own run folder" >&2
+        exit 1
+    fi
+fi
 
 mkdir -p logs
 echo "job: $job  script: $script  ${RUN_NAME:+run: $RUNS_DIR/$RUN_NAME}"
@@ -125,7 +185,7 @@ if [ "$LOCAL" = 1 ]; then
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|ENCODER_NAME|DECODER_NAME|CLAP|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -140,7 +200,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|ENCODER_NAME|DECODER_NAME|CLAP)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

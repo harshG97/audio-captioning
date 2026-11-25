@@ -43,8 +43,12 @@ PROMPT_DROPOUT=${PROMPT_DROPOUT:-0.0}
 PATIENCE=${PATIENCE:-0}       # early stopping patience in epochs; 0 = off
 SEED=${SEED:-42}
 SKIP_SPICE=${SKIP_SPICE:-1}
-ENCODER_NAME=${ENCODER_NAME:-laion/clap-htsat-fused}
+# The CLAP checkpoint the features were made with (recorded by preprocessing);
+# the encoder weights are not used in training, which reads FEAT_DIR.
+ENCODER_NAME=${ENCODER_NAME:-$(cat "$FEAT_DIR/clap.txt" 2>/dev/null || echo laion/clap-htsat-fused)}
 DECODER_NAME=${DECODER_NAME:-gpt2}
+XATTN=${XATTN:-7}             # cross-attention size in millions: 28 14 7 3.5 1.75
+TRAIN_DECODER=${TRAIN_DECODER:-0}   # 1 = fine-tune all of GPT-2 too
 # Space-separated name:csv:split triples; split picks the HDF5 and cache files.
 EVAL_SETS=${EVAL_SETS:-val:$DATA_DIR/val.csv:val}
 WORKERS=${SLURM_CPUS_PER_TASK:-8}
@@ -65,10 +69,31 @@ fi
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
 mkdir -p "$RUN_DIR/.done"
 
+# Everything that shapes training. A resubmission must match the settings the
+# run folder was started with; otherwise its finished steps would be reused
+# for a different experiment. (EVAL_SETS and SKIP_SPICE may change: they only
+# add or rescore evaluations.)
+settings=$(printf '%s\n' "K=$K" "CACHE_K=$CACHE_K" "CACHE_VARIANT=$CACHE_VARIANT" \
+    "DATA_DIR=$DATA_DIR" "FEAT_DIR=$FEAT_DIR" "CACHE_DIR=$CACHE_DIR" "EPOCHS=$EPOCHS" \
+    "BATCH=$BATCH" "LR=$LR" "PROMPT_DROPOUT=$PROMPT_DROPOUT" "PATIENCE=$PATIENCE" \
+    "SEED=$SEED" "ENCODER_NAME=$ENCODER_NAME" "DECODER_NAME=$DECODER_NAME" \
+    "XATTN=$XATTN" "TRAIN_DECODER=$TRAIN_DECODER")
+if [ -f "$RUN_DIR/settings.txt" ]; then
+    if ! diff <(cat "$RUN_DIR/settings.txt") <(echo "$settings") > /dev/null; then
+        echo "$RUN_DIR was started with different settings (< before, > now):" >&2
+        diff <(cat "$RUN_DIR/settings.txt") <(echo "$settings") >&2 || true
+        echo "Use a new RUN_NAME or TAG, or delete $RUN_DIR/settings.txt if the change is intended." >&2
+        exit 1
+    fi
+else
+    echo "$settings" > "$RUN_DIR/settings.txt"
+fi
+
 echo "host: $(hostname)  job: ${SLURM_JOB_ID:-local}  start: $(date)"
 echo "run: $RUN_DIR"
 cache_label=top${CACHE_K}${CACHE_VARIANT}
 [ "$K" -eq 0 ] && cache_label=empty
+echo "encoder=$ENCODER_NAME decoder=$DECODER_NAME xattn=${XATTN}M train_decoder=$TRAIN_DECODER"
 echo "K=$K cache=$cache_label epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
 echo "train csv: $DATA_DIR/train.csv  features: $FEAT_DIR  caches: $CACHE_DIR"
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| cuda', torch.cuda.is_available())"
@@ -105,6 +130,8 @@ EARLY_ARGS=()
 [ "$PATIENCE" -gt 0 ] && EARLY_ARGS=(--early_stopping_patience "$PATIENCE")
 
 # 1. Train (resumes from the last checkpoint if the job was cut short)
+DECODER_ARGS=()
+[ "$TRAIN_DECODER" = 1 ] && DECODER_ARGS=(--train_decoder)
 step train python train.py \
     --train_csv "$DATA_DIR/train.csv" --train_hdf5 "$FEAT_DIR/audiocaps_train.hdf5" \
     --train_retrieval_cache "$(cache train)" \
@@ -112,6 +139,7 @@ step train python train.py \
     --val_retrieval_cache "$(cache val)" \
     --output_dir "$RUN_DIR" \
     --encoder_name "$ENCODER_NAME" --decoder_name "$DECODER_NAME" \
+    --attention_size "$XATTN" "${DECODER_ARGS[@]}" \
     "${RAG_ARGS[@]}" --prompt_dropout "$PROMPT_DROPOUT" \
     --num_train_epochs "$EPOCHS" --per_device_train_batch_size "$BATCH" \
     --per_device_eval_batch_size "$BATCH" --learning_rate "$LR" --seed "$SEED" \

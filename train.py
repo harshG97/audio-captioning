@@ -13,6 +13,7 @@ import contextlib
 import csv
 import os
 
+import h5py
 import numpy as np
 import torch
 from transformers import EarlyStoppingCallback, Trainer, TrainingArguments
@@ -185,6 +186,25 @@ def write_history(log_history: list[dict], path: str) -> int:
     return len(rows)
 
 
+def feature_width(hdf5_path: str) -> int:
+    """Last dimension of the first clip's features in an HDF5 feature file."""
+    with h5py.File(hdf5_path, "r") as f:
+        first = next(iter(f.keys()))
+        return int(f[first].shape[-1])
+
+
+def check_feature_width(hdf5_path: str, decoder_width: int) -> None:
+    """Cross-attention reads encoder features at the decoder's width, with no
+    projection in between, so the two must match (768 for CLAP HTSAT-base and
+    GPT-2 small)."""
+    width = feature_width(hdf5_path)
+    if width != decoder_width:
+        raise SystemExit(
+            f"{hdf5_path} holds {width}-wide features but the decoder is "
+            f"{decoder_width} wide. Cross-attention has no projection between "
+            f"them, so pick an encoder/decoder pair of the same width.")
+
+
 def main() -> None:
     args = parse_args()
 
@@ -196,6 +216,11 @@ def main() -> None:
         train_decoder=args.train_decoder,
         xattn_zero_init=args.xattn_zero_init,
     )
+
+    decoder_width = model.decoder.config.hidden_size
+    check_feature_width(args.train_hdf5, decoder_width)
+    if args.val_hdf5:
+        check_feature_width(args.val_hdf5, decoder_width)
 
     # Record retrieval metadata onto the config so the checkpoint remembers it.
     model.config.rag = args.rag
