@@ -17,7 +17,7 @@ import shutil
 import h5py
 import numpy as np
 import torch
-from transformers import EarlyStoppingCallback, Trainer, TrainerCallback, TrainingArguments
+from transformers import EarlyStoppingCallback, Trainer, TrainerCallback, TrainingArguments, set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
 from data.access_id import DATASETS
@@ -239,6 +239,9 @@ def check_feature_width(hdf5_path: str, decoder_width: int) -> None:
 
 def main() -> None:
     args = parse_args()
+    # Seed before building the model: the cross-attention layers are randomly
+    # initialised there, and the Trainer only seeds when it is created.
+    set_seed(args.seed)
 
     model, tokenizer = build_recap(
         encoder_name=args.encoder_name,

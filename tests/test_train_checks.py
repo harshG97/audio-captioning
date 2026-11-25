@@ -95,3 +95,20 @@ def test_snapshot_every_needs_epoch_saves(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--snapshot_every", "10",
                                       "--eval_save_strategy", "epoch"])
     assert train.parse_args().snapshot_every == 10
+
+
+def test_seed_is_set_before_the_model_is_built(monkeypatch):
+    """The cross-attention layers are randomly initialised in build_recap, so
+    the seed must be set first or runs with the same seed differ."""
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--seed", "7"])
+    monkeypatch.setattr(train, "set_seed", lambda seed: calls.append(("seed", seed)))
+
+    def fake_build(**kwargs):
+        calls.append(("build", None))
+        raise RuntimeError("stop after building")
+
+    monkeypatch.setattr(train, "build_recap", fake_build)
+    with pytest.raises(RuntimeError, match="stop after building"):
+        train.main()
+    assert calls == [("seed", 7), ("build", None)]
