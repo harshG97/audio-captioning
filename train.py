@@ -124,15 +124,27 @@ def parse_args() -> argparse.Namespace:
              "0 disables (default). Needs --load_best_model_at_end.")
     p.add_argument(
         "--snapshot_every", type=int, default=0,
-        help="Also keep every N-th epoch's model in OUTPUT_DIR/snapshots/epochNNN "
-             "(model and tokenizer only), safe from --save_total_limit. "
-             "0 disables (default). Needs --eval_save_strategy epoch.")
+        help="Also keep every N-th epoch's checkpoint in OUTPUT_DIR/snapshots/epochNNN, "
+             "safe from --save_total_limit. Snapshots are full checkpoints: "
+             "evaluate.py can load them and --resume_from can continue from "
+             "them. 0 disables (default). Needs --eval_save_strategy epoch.")
     p.add_argument(
         "--resume", action="store_true",
         help="If --output_dir already holds checkpoint-* folders, continue "
              "from the latest one (optimizer, scheduler, RNG and step count "
              "included). Otherwise start fresh. Safe to pass on every launch, "
              "so a resubmitted job picks up where it stopped.")
+    p.add_argument(
+        "--resume_from", type=str, default=None,
+        help="Start from this checkpoint folder (another run's checkpoint-N or "
+             "snapshots/epochNNN|best), with its optimizer, scheduler and step "
+             "count. Once OUTPUT_DIR has checkpoints of its own, --resume "
+             "continues from those instead.")
+    p.add_argument(
+        "--track_best", action="store_true",
+        help="Track the checkpoint with the lowest eval_loss without reloading "
+             "it at the end, and copy it to OUTPUT_DIR/snapshots/best. For runs "
+             "that keep the last epoch.")
     args = p.parse_args()
 
     if args.early_stopping_patience > 0 and not args.load_best_model_at_end:
@@ -141,6 +153,10 @@ def parse_args() -> argparse.Namespace:
         p.error("--snapshot_every must be 0 or more")
     if args.snapshot_every > 0 and args.eval_save_strategy != "epoch":
         p.error("--snapshot_every needs --eval_save_strategy epoch")
+    if args.resume_from and not os.path.isfile(os.path.join(args.resume_from, "trainer_state.json")):
+        p.error(f"--resume_from {args.resume_from} is not a checkpoint folder (no trainer_state.json)")
+    if args.track_best and not args.val_csv:
+        p.error("--track_best needs a validation set (--val_csv)")
 
     # Resolve attention-size flags.
     if args.attention_size is not None:
@@ -198,11 +214,10 @@ def write_history(log_history: list[dict], path: str) -> int:
 
 class SnapshotCallback(TrainerCallback):
     """Copies the checkpoint saved at every N-th epoch to
-    OUTPUT_DIR/snapshots/epochNNN, leaving out the optimizer, scheduler and
-    RNG state, so --save_total_limit cannot prune it and evaluate.py can load
-    it like a finished run."""
-
-    SKIP = ("optimizer.pt", "scheduler.pt", "scaler.pt", "rng_state*.pth")
+    OUTPUT_DIR/snapshots/epochNNN so --save_total_limit cannot prune it. The
+    copy is a full checkpoint (optimizer, scheduler and RNG state included):
+    evaluate.py loads it like a finished run, and --resume_from continues
+    training from it."""
 
     def __init__(self, every: int):
         self.every = every
@@ -214,7 +229,7 @@ class SnapshotCallback(TrainerCallback):
         src = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
         dst = os.path.join(args.output_dir, "snapshots", f"epoch{epoch:03d}")
         if os.path.isdir(src) and not os.path.exists(dst):
-            shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*self.SKIP))
+            shutil.copytree(src, dst)
             print(f"[snapshot] epoch {epoch} -> {dst}")
 
 
@@ -313,8 +328,8 @@ def main() -> None:
         evaluation_strategy=args.eval_save_strategy if eval_ds is not None else "no",
         save_strategy=args.eval_save_strategy,
         load_best_model_at_end=args.load_best_model_at_end,
-        metric_for_best_model="eval_loss" if args.load_best_model_at_end else None,
-        greater_is_better=False if args.load_best_model_at_end else None,
+        metric_for_best_model="eval_loss" if args.load_best_model_at_end or args.track_best else None,
+        greater_is_better=False if args.load_best_model_at_end or args.track_best else None,
         seed=args.seed,
         dataloader_num_workers=args.num_workers,
         dataloader_persistent_workers=args.persistent_workers and args.num_workers > 0,
@@ -343,6 +358,8 @@ def main() -> None:
     )
 
     resume_from = resume_checkpoint(args.output_dir) if args.resume else None
+    if resume_from is None and args.resume_from:
+        resume_from = args.resume_from
     if resume_from:
         print(f"[resume] continuing from {resume_from}")
         safe = getattr(torch.serialization, "safe_globals", None)
@@ -362,6 +379,22 @@ def main() -> None:
     print(f"[history] {n} rows -> {os.path.join(args.output_dir, 'history.csv')}")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
+    if args.track_best:
+        keep_best_checkpoint(trainer.state.best_model_checkpoint, args.output_dir)
+
+
+def keep_best_checkpoint(best: str | None, output_dir: str) -> str | None:
+    """Copy the lowest-eval_loss checkpoint to OUTPUT_DIR/snapshots/best,
+    replacing an older copy (a resumed run may have found a better one)."""
+    if not best or not os.path.isdir(best):
+        print(f"[best] no best checkpoint to keep ({best})")
+        return None
+    dst = os.path.join(output_dir, "snapshots", "best")
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(best, dst)
+    print(f"[best] {best} -> {dst}")
+    return dst
 
 
 if __name__ == "__main__":

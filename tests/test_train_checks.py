@@ -54,7 +54,7 @@ def _save(callback, run_dir, epoch, step):
                      None)
 
 
-def test_snapshot_keeps_every_nth_epoch_without_optimizer_state(tmp_path):
+def test_snapshot_keeps_every_nth_epoch_as_a_full_checkpoint(tmp_path):
     cb = train.SnapshotCallback(every=10)
     for epoch in range(1, 21):
         _checkpoint(tmp_path, epoch * 7)
@@ -62,7 +62,8 @@ def test_snapshot_keeps_every_nth_epoch_without_optimizer_state(tmp_path):
     snaps = sorted(p.name for p in (tmp_path / "snapshots").iterdir())
     assert snaps == ["epoch010", "epoch020"]
     kept = sorted(p.name for p in (tmp_path / "snapshots" / "epoch010").iterdir())
-    assert kept == ["config.json", "model.safetensors", "tokenizer.json", "trainer_state.json"]
+    assert kept == sorted(p.name for p in (tmp_path / "checkpoint-70").iterdir())
+    assert "optimizer.pt" in kept and "scheduler.pt" in kept and "rng_state.pth" in kept
 
 
 def test_snapshot_is_not_overwritten_on_resume(tmp_path):
@@ -95,6 +96,42 @@ def test_snapshot_every_needs_epoch_saves(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--snapshot_every", "10",
                                       "--eval_save_strategy", "epoch"])
     assert train.parse_args().snapshot_every == 10
+
+
+def test_keep_best_checkpoint_copies_and_replaces(tmp_path):
+    first = _checkpoint(tmp_path, 10)
+    assert train.keep_best_checkpoint(str(first), str(tmp_path)) == str(tmp_path / "snapshots" / "best")
+    best = tmp_path / "snapshots" / "best"
+    assert (best / "optimizer.pt").read_text() == "optimizer.pt"
+    (best / "stale.txt").write_text("from an earlier best")
+    second = _checkpoint(tmp_path, 20)
+    (second / "config.json").write_text("second")
+    train.keep_best_checkpoint(str(second), str(tmp_path))
+    assert (best / "config.json").read_text() == "second"
+    assert not (best / "stale.txt").exists()
+
+
+def test_keep_best_checkpoint_without_a_best(tmp_path):
+    assert train.keep_best_checkpoint(None, str(tmp_path)) is None
+    assert train.keep_best_checkpoint(str(tmp_path / "gone"), str(tmp_path)) is None
+    assert not (tmp_path / "snapshots").exists()
+
+
+def test_resume_from_must_be_a_checkpoint(monkeypatch, tmp_path):
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--resume_from", str(tmp_path)])
+    with pytest.raises(SystemExit):
+        train.parse_args()
+    ckpt = _checkpoint(tmp_path, 5)
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--resume_from", str(ckpt)])
+    assert train.parse_args().resume_from == str(ckpt)
+
+
+def test_track_best_needs_a_validation_set(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--track_best"])
+    with pytest.raises(SystemExit):
+        train.parse_args()
+    monkeypatch.setattr(sys, "argv", ["train.py", *REQUIRED, "--track_best", "--val_csv", "v.csv"])
+    assert train.parse_args().track_best
 
 
 def test_seed_is_set_before_the_model_is_built(monkeypatch):

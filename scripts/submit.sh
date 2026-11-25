@@ -28,11 +28,14 @@
 #   TRAIN_DECODER=1          fine-tune all of GPT-2, not just cross-attention -> _ftdec
 #   PROMPT_DROPOUT=0.3       train without the retrieved captions 30% of the time -> _pd0.3
 #   KEEP=last                train all EPOCHS without early stopping and keep the
-#                            last epoch, as RECAP's code does; snapshots every
-#                            SNAPSHOT_EVERY (10) epochs are scored on val -> _last
-# Pointing a training job at other features, caches or models needs a TAG,
-# which is appended to the run name (TAG=ds2 -> a_paper_k4_ds2_s42):
-#   FEAT_DIR, CACHE_DIR, ENCODER_NAME, DECODER_NAME
+#                            last epoch, as RECAP's code does; full checkpoints of
+#                            every SNAPSHOT_EVERY-th (10) epoch and of the lowest-
+#                            val-loss epoch go to snapshots/ and are scored -> _last
+# Pointing a training job at other features, caches or models, or starting it
+# from another run's checkpoint, needs a TAG, which is appended to the run
+# name (TAG=ds2 -> a_paper_k4_ds2_s42):
+#   FEAT_DIR, CACHE_DIR, ENCODER_NAME, DECODER_NAME, RESUME_FROM
+#   RESUME_FROM=<run>/snapshots/epoch050 TAG=from50 KEEP=last scripts/submit.sh run-a
 #   CACHE_DIR=$HOME/scratch/recap/features TAG=ds2 scripts/submit.sh run-a
 # Preprocessing takes CLAP=<checkpoint> (default laion/clap-htsat-fused) and
 # refuses to mix checkpoints in one FEAT_DIR, e.g. for the paper split only:
@@ -163,6 +166,11 @@ case $job in
         echo "unknown job: $job" >&2; usage >&2; exit 1 ;;
 esac
 
+if [ -n "${RESUME_FROM:-}" ] && [ ! -f "$RESUME_FROM/trainer_state.json" ]; then
+    echo "RESUME_FROM=$RESUME_FROM is not a checkpoint folder (no trainer_state.json)" >&2
+    exit 1
+fi
+
 # KEEP=last trains every epoch, so early stopping is off.
 if [ "${KEEP:-best}" = last ] && [ "$script" = scripts/phoenix_train.sbatch ]; then
     if [ -n "$ORIG_PATIENCE" ] && [ "$ORIG_PATIENCE" != 0 ]; then
@@ -182,6 +190,7 @@ if [ "$script" = scripts/phoenix_train.sbatch ] && [ -z "${TAG:-}" ]; then
     [ -n "$ORIG_CACHE_DIR" ] && [ "${ORIG_CACHE_DIR%/}" != "$default_cache" ] && overridden+=(CACHE_DIR)
     [ -n "$ORIG_ENCODER_NAME" ] && [ "$ORIG_ENCODER_NAME" != laion/clap-htsat-fused ] && overridden+=(ENCODER_NAME)
     [ -n "$ORIG_DECODER_NAME" ] && [ "$ORIG_DECODER_NAME" != gpt2 ] && overridden+=(DECODER_NAME)
+    [ -n "${RESUME_FROM:-}" ] && overridden+=(RESUME_FROM)
     if [ ${#overridden[@]} -gt 0 ]; then
         echo "${overridden[*]} set: also set TAG=<name> so this variant gets its own run folder" >&2
         exit 1
@@ -203,7 +212,7 @@ if [ "$LOCAL" = 1 ]; then
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|ENCODER_NAME|DECODER_NAME|CLAP|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -218,7 +227,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|ENCODER_NAME|DECODER_NAME|CLAP)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

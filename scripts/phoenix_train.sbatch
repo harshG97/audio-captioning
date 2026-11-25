@@ -51,7 +51,10 @@ XATTN=${XATTN:-7}             # cross-attention size in millions: 28 14 7 3.5 1.
 TRAIN_DECODER=${TRAIN_DECODER:-0}   # 1 = fine-tune all of GPT-2 too
 # best: keep the epoch with the lowest val loss (early stopping if PATIENCE>0).
 # last: train all EPOCHS and keep the last, as RECAP's own code does, saving a
-# snapshot every SNAPSHOT_EVERY epochs that is scored on the first eval set.
+# snapshot every SNAPSHOT_EVERY epochs plus the lowest-val-loss epoch
+# (snapshots/best); all are full checkpoints, scored on the first eval set.
+# RESUME_FROM=<checkpoint folder> starts this run from another run's checkpoint.
+RESUME_FROM=${RESUME_FROM:-}
 KEEP=${KEEP:-best}
 if [ "$KEEP" = last ]; then SNAPSHOT_EVERY=${SNAPSHOT_EVERY:-10}; else SNAPSHOT_EVERY=${SNAPSHOT_EVERY:-0}; fi
 # Space-separated name:csv:split triples; split picks the HDF5 and cache files.
@@ -93,6 +96,7 @@ settings=$(printf '%s\n' "K=$K" "CACHE_K=$CACHE_K" "CACHE_VARIANT=$CACHE_VARIANT
 if [ "$KEEP" != best ] || [ "$SNAPSHOT_EVERY" != 0 ]; then
     settings+=$'\n'"KEEP=$KEEP"$'\n'"SNAPSHOT_EVERY=$SNAPSHOT_EVERY"
 fi
+[ -z "$RESUME_FROM" ] || settings+=$'\n'"RESUME_FROM=$RESUME_FROM"
 if [ -f "$RUN_DIR/settings.txt" ]; then
     if ! diff <(cat "$RUN_DIR/settings.txt") <(echo "$settings") > /dev/null; then
         echo "$RUN_DIR was started with different settings (< before, > now):" >&2
@@ -147,8 +151,9 @@ EARLY_ARGS=()
 # 1. Train (resumes from the last checkpoint if the job was cut short)
 DECODER_ARGS=()
 [ "$TRAIN_DECODER" = 1 ] && DECODER_ARGS=(--train_decoder)
-BEST_ARGS=()
-[ "$KEEP" = best ] && BEST_ARGS=(--load_best_model_at_end)
+BEST_ARGS=(--load_best_model_at_end)
+[ "$KEEP" = last ] && BEST_ARGS=(--track_best)
+[ -n "$RESUME_FROM" ] && BEST_ARGS+=(--resume_from "$RESUME_FROM")
 step train python train.py \
     --train_csv "$DATA_DIR/train.csv" --train_hdf5 "$FEAT_DIR/audiocaps_train.hdf5" \
     --train_retrieval_cache "$(cache train)" \
@@ -201,7 +206,7 @@ fi
 #     to see at which epoch caption quality peaks
 if [ -d "$RUN_DIR/snapshots" ]; then
     IFS=: read -r name csv split <<< "${EVAL_SETS%% *}"
-    for snap in "$RUN_DIR"/snapshots/epoch*; do
+    for snap in "$RUN_DIR"/snapshots/epoch* "$RUN_DIR"/snapshots/best; do
         [ -d "$snap" ] || continue
         e=$(basename "$snap")
         step "snap_${e}_eval_$name" python evaluate.py \
@@ -234,13 +239,19 @@ for spec in sys.argv[2:]:
         cells = "".join(f"{m[c]:>16.3f}" if isinstance(m.get(c), (int, float)) else f"{'-':>16s}"
                         for c in cols)
         print(f"{label:22s}{cells}")
-snaps = sorted(run.glob("snapshots/epoch*/metrics_*.json"))
+snaps = (sorted(run.glob("snapshots/epoch*/metrics_*.json"))
+         + sorted(run.glob("snapshots/best/metrics_*.json")))
 if snaps:
     print()
-    print("snapshots (first eval set):")
+    print("snapshots (first eval set; best = lowest val loss):")
     for p in snaps:
         m = json.loads(p.read_text())
-        label = f"{p.parent.name} / {p.stem.removeprefix('metrics_')}"
+        name = p.parent.name
+        if name == "best":
+            state = p.parent / "trainer_state.json"
+            if state.exists():
+                name = f"best (ep {round(json.loads(state.read_text()).get('epoch', 0))})"
+        label = f"{name} / {p.stem.removeprefix('metrics_')}"
         cells = "".join(f"{m[c]:>16.3f}" if isinstance(m.get(c), (int, float)) else f"{'-':>16s}"
                         for c in cols)
         print(f"{label:22s}{cells}")

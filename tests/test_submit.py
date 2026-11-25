@@ -18,7 +18,7 @@ SUBMIT = REPO_ROOT / "scripts" / "submit.sh"
 CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "K", "SEED", "DEDUP", "XATTN", "TRAIN_DECODER", "PROMPT_DROPOUT", "TAG",
            "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT", "KEEP", "PATIENCE",
-           "SNAPSHOT_EVERY", "EPOCHS"]
+           "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -121,3 +121,15 @@ def test_keep_last_turns_off_early_stopping(tmp_path):
     s = settings(submit("run-a", tmp_path, KEEP="last"))
     assert s["PATIENCE"] == "0" and s["KEEP"] == "last" and s["EPOCHS"] == "100"
     assert settings(submit("run-a", tmp_path, KEEP="last", PATIENCE=0))["PATIENCE"] == "0"
+
+
+def test_resume_from_needs_a_tag_and_a_checkpoint(tmp_path):
+    ckpt = tmp_path / "run" / "snapshots" / "epoch050"
+    ckpt.mkdir(parents=True)
+    refused = submit("run-a", tmp_path, RESUME_FROM=ckpt, TAG="from50")
+    assert refused.returncode != 0 and "not a checkpoint" in refused.stderr
+    (ckpt / "trainer_state.json").write_text("{}")
+    no_tag = submit("run-a", tmp_path, RESUME_FROM=ckpt)
+    assert no_tag.returncode != 0 and "RESUME_FROM" in no_tag.stderr
+    s = settings(submit("run-a", tmp_path, RESUME_FROM=ckpt, TAG="from50", KEEP="last"))
+    assert s["RUN_NAME"] == "a_paper_k4_last_from50_s42" and s["RESUME_FROM"] == str(ckpt)
