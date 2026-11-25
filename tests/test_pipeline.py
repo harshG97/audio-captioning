@@ -282,3 +282,106 @@ def test_beam_generation_runs(recap, data_files):
     (text, reason), _, _ = _generate(model, tok, data_files, num_beams=3)
     assert isinstance(text, str)
     assert reason in {"eos", "max_new_tokens"}
+
+
+# ---- decoder wider than the encoder: the encoder-to-decoder projection ----
+
+WIDE = 96            # tiny "GPT-2 medium": wider than the tiny CLAP's 64
+
+
+@pytest.fixture(scope="module")
+def wide_gpt2_dir(model_dirs, tmp_path_factory):
+    """A tiny GPT-2 that is wider than the tiny CLAP's audio output."""
+    _, gpt2_dir = model_dirs
+    tok = GPT2TokenizerFast.from_pretrained(gpt2_dir)
+    wide_dir = tmp_path_factory.mktemp("tiny_gpt2_wide")
+    torch.manual_seed(0)
+    GPT2LMHeadModel(GPT2Config(vocab_size=len(tok), n_positions=256, n_embd=WIDE,
+                               n_layer=2, n_head=4, bos_token_id=tok.eos_token_id,
+                               eos_token_id=tok.eos_token_id)).save_pretrained(wide_dir)
+    tok.save_pretrained(wide_dir)
+    return str(wide_dir)
+
+
+@pytest.fixture
+def wide_recap(model_dirs, wide_gpt2_dir):
+    clap_dir, _ = model_dirs
+    torch.manual_seed(0)
+    return build_recap(encoder_name=clap_dir, decoder_name=wide_gpt2_dir,
+                       cross_attention_reduce_factor=4)
+
+
+def test_equal_widths_have_no_projection(recap):
+    model, _ = recap
+    assert model.enc_to_dec_proj is None
+    assert not any("enc_to_dec_proj" in k for k in model.state_dict())
+
+
+def test_encoder_width_is_the_audio_width(model_dirs):
+    """CLAP's own hidden_size is the text tower's (32 here); the features
+    are the audio tower's width (64)."""
+    from transformers import AutoConfig
+    from model.recap import encoder_output_width
+    cfg = AutoConfig.from_pretrained(model_dirs[0])
+    assert cfg.hidden_size != HIDDEN and encoder_output_width(cfg) == HIDDEN
+
+
+def test_wider_decoder_gets_a_trainable_projection(wide_recap):
+    model, _ = wide_recap
+    proj = model.enc_to_dec_proj
+    assert (proj.in_features, proj.out_features) == (HIDDEN, WIDE)
+    assert all(p.requires_grad for p in proj.parameters())
+    import train
+    assert train.model_input_width(model) == HIDDEN
+
+
+def test_wide_training_step_updates_projection_and_cross_attention_only(wide_recap, data_files):
+    model, tok = wide_recap
+    batch = _batch(data_files, tok)                # features are HIDDEN (64) wide
+    before = {n: p.detach().clone() for n, p in model.named_parameters()}
+    model.train()
+    opt = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=1e-3)
+    for _ in range(3):
+        opt.zero_grad()
+        loss = _forward(model, batch).loss
+        assert torch.isfinite(loss)
+        loss.backward()
+        opt.step()
+    changed = {n for n, p in model.named_parameters() if not torch.equal(p, before[n])}
+    assert {"enc_to_dec_proj.weight", "enc_to_dec_proj.bias"} <= changed
+    assert all(any(k in n for k in XATTN_PARAM_KEYS) for n in changed), sorted(changed)[:5]
+
+
+def test_wide_save_load_roundtrip(wide_recap, data_files, tmp_path):
+    model, tok = wide_recap
+    batch = _batch(data_files, tok)
+    model.eval()
+    with torch.no_grad():
+        ref = _forward(model, batch).logits
+    model.save_pretrained(tmp_path)
+    tok.save_pretrained(tmp_path)
+    loaded, _ = load_recap_checkpoint(str(tmp_path))
+    loaded.eval()
+    assert torch.equal(loaded.enc_to_dec_proj.weight, model.enc_to_dec_proj.weight)
+    with torch.no_grad():
+        assert torch.allclose(_forward(loaded, batch).logits, ref, atol=1e-5)
+
+
+@pytest.mark.parametrize("num_beams", [1, 3])
+def test_wide_generation_runs(wide_recap, data_files, num_beams):
+    model, tok = wide_recap
+    model.eval()
+    (caption, stop_reason), _, _ = _generate(model, tok, data_files, num_beams=num_beams)
+    assert isinstance(caption, str) and stop_reason in ("eos", "max_new_tokens")
+
+
+def test_feature_width_check_uses_the_model_input(wide_recap, data_files, tmp_path):
+    import train
+    model, _ = wide_recap
+    _, h5, _ = data_files
+    train.check_feature_width(h5, train.model_input_width(model))      # 64-wide features: fine
+    wrong = tmp_path / "wrong.hdf5"
+    with h5py.File(wrong, "w") as f:
+        f["x"] = np.zeros((ENC_LEN, WIDE), dtype=np.float32)
+    with pytest.raises(SystemExit, match="96-wide features but the model reads 64-wide"):
+        train.check_feature_width(str(wrong), train.model_input_width(model))

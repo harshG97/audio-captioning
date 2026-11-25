@@ -336,16 +336,23 @@ def feature_width(hdf5_path: str) -> int:
         return int(f[first].shape[-1])
 
 
-def check_feature_width(hdf5_path: str, decoder_width: int) -> None:
-    """Cross-attention reads encoder features at the decoder's width, with no
-    projection in between, so the two must match (768 for CLAP HTSAT-base and
-    GPT-2 small)."""
+def model_input_width(model) -> int:
+    """Width of the encoder features the model reads: the projection's input
+    when the encoder and decoder widths differ, otherwise the decoder's."""
+    proj = getattr(model, "enc_to_dec_proj", None)
+    return proj.in_features if proj is not None else model.decoder.config.hidden_size
+
+
+def check_feature_width(hdf5_path: str, expected: int) -> None:
+    """The HDF5 features must have the width of the encoder the model was
+    built with (768 for CLAP HTSAT-base); a mismatch means they were made
+    with a different CLAP than --encoder_name."""
     width = feature_width(hdf5_path)
-    if width != decoder_width:
+    if width != expected:
         raise SystemExit(
-            f"{hdf5_path} holds {width}-wide features but the decoder is "
-            f"{decoder_width} wide. Cross-attention has no projection between "
-            f"them, so pick an encoder/decoder pair of the same width.")
+            f"{hdf5_path} holds {width}-wide features but the model reads "
+            f"{expected}-wide encoder features. Were they made with a different "
+            f"CLAP than --encoder_name?")
 
 
 def main() -> None:
@@ -363,10 +370,10 @@ def main() -> None:
         xattn_zero_init=args.xattn_zero_init,
     )
 
-    decoder_width = model.decoder.config.hidden_size
-    check_feature_width(args.train_hdf5, decoder_width)
+    input_width = model_input_width(model)
+    check_feature_width(args.train_hdf5, input_width)
     if args.val_hdf5:
-        check_feature_width(args.val_hdf5, decoder_width)
+        check_feature_width(args.val_hdf5, input_width)
 
     # Record retrieval metadata onto the config so the checkpoint remembers it.
     model.config.rag = args.rag

@@ -34,7 +34,7 @@ def test_matching_width_passes(tmp_path):
 
 def test_mismatched_width_stops_with_a_clear_message(tmp_path):
     path = _features(tmp_path / "f.hdf5", 1024)
-    with pytest.raises(SystemExit, match="1024-wide features but the decoder is 768 wide"):
+    with pytest.raises(SystemExit, match="1024-wide features but the model reads 768-wide"):
         train.check_feature_width(path, 768)
 
 

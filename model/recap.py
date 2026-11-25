@@ -14,6 +14,7 @@ layers.
 from typing import Optional
 
 import torch
+from torch import nn
 from torch.nn import CrossEntropyLoss
 
 from transformers.configuration_utils import PretrainedConfig
@@ -54,6 +55,14 @@ def shift_tokens_right(
 
     shifted.masked_fill_(shifted == -100, pad_token_id)
     return shifted
+
+def encoder_output_width(encoder_config: PretrainedConfig) -> int:
+    """Width of the features the audio encoder produces (and that the HDF5
+    feature files hold). A CLAP config's own hidden_size is the *text*
+    tower's width; the audio output width is audio_config.hidden_size."""
+    audio = getattr(encoder_config, "audio_config", None)
+    return int(audio.hidden_size if audio is not None else encoder_config.hidden_size)
+
 
 class RECAPConfig(VisionEncoderDecoderConfig):
     """
@@ -121,6 +130,14 @@ class RECAP(PreTrainedModel):
         # Keep the wrapped configs in sync with the parent config.
         self.encoder.config = self.config.encoder
         self.decoder.config = self.config.decoder
+
+        # Cross-attention reads the encoder features at the decoder's width.
+        # When the widths differ (e.g. CLAP's 768 and GPT-2 medium's 1024) a
+        # trainable linear layer maps one to the other; with equal widths
+        # (GPT-2 small) there is none and the model is unchanged.
+        enc_width = encoder_output_width(self.config.encoder)
+        dec_width = self.config.decoder.hidden_size
+        self.enc_to_dec_proj = nn.Linear(enc_width, dec_width) if enc_width != dec_width else None
 
     def tie_weights(self):
         # Delegate to the decoder so GPT-2's lm_head ↔ wte tie is
@@ -311,6 +328,8 @@ class RECAP(PreTrainedModel):
             encoder_outputs = BaseModelOutput(encoder_outputs, None)
 
         encoder_hidden_states = encoder_outputs[0]
+        if self.enc_to_dec_proj is not None:
+            encoder_hidden_states = self.enc_to_dec_proj(encoder_hidden_states)
         encoder_attention_mask = None  # CLAP audio outputs don't carry a padding mask
 
         # Build decoder inputs from labels if needed

@@ -204,9 +204,20 @@ FEAT_DIR=$HOME/scratch/recap/features_unfused CACHE_DIR=$HOME/scratch/recap/feat
     TAG=unfused scripts/submit.sh run-a
 ```
 
-Cross-attention reads the encoder features at the decoder's width with no
-projection, so the encoder and decoder must have the same width (768 for
-CLAP HTSAT-base and GPT-2 small); `train.py` stops early if they differ.
+Cross-attention reads the encoder features at the decoder's width. When the
+two differ, e.g. CLAP's 768 and GPT-2 medium's 1024, the model adds a
+trainable linear projection between them (`enc_to_dec_proj`); with equal
+widths (GPT-2 small) there is none and the model is unchanged. `train.py`
+stops early if the features are not as wide as the encoder the model was
+built with. A larger GPT-2 needs only a `DECODER_NAME` and a `TAG`:
+
+```bash
+DECODER_NAME=gpt2-medium TAG=medium scripts/submit.sh run-a     # a_paper_k4_medium_s42
+```
+
+`XATTN` names the cross-attention sizes of GPT-2 small; it sets the reduce
+factor (7 = 4), so on GPT-2 medium `XATTN=7` is about 25M parameters plus
+0.8M for the projection. The run log prints the actual trainable count.
 
 ### Running on a single GPU machine (no Slurm)
 

@@ -51,7 +51,7 @@ ATTENTION_SIZE_TO_REDUCE_FACTOR: dict[float, int] = {
 
 # Substrings that identify the cross-attention sublayer params. Used by
 # both the freeze policy and the optimizer param-group split.
-XATTN_PARAM_KEYS: tuple[str, ...] = ("crossattention", "ln_cross_attn")
+XATTN_PARAM_KEYS: tuple[str, ...] = ("crossattention", "ln_cross_attn", "enc_to_dec_proj")
 
 
 def _register_auto_classes_once() -> None:
@@ -132,6 +132,8 @@ def apply_freeze_policy(
     - train_decoder=False  : only cross-attn sublayers + ln_cross_attn are
                              trainable in the decoder; everything else frozen.
     - train_decoder=True   : every decoder param is trainable.
+    - the encoder-to-decoder projection (only present when their widths
+      differ) is new, so it is always trainable.
     """
     if freeze_encoder:
         for p in model.encoder.parameters():
@@ -147,6 +149,10 @@ def apply_freeze_policy(
     else:
         for name, p in model.decoder.named_parameters():
             p.requires_grad = any(k in name for k in XATTN_PARAM_KEYS)
+
+    if getattr(model, "enc_to_dec_proj", None) is not None:
+        for p in model.enc_to_dec_proj.parameters():
+            p.requires_grad = True
 
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     n_total = sum(p.numel() for p in model.parameters())
@@ -164,8 +170,8 @@ def build_param_groups(
     """Build AdamW param groups split by (xattn vs decoder backbone) ×
     (decay vs no-decay).
 
-    - xattn group:    params whose name contains 'crossattention' or
-                      'ln_cross_attn' -> LR = lr_xattn.
+    - xattn group:    params whose name contains 'crossattention',
+                      'ln_cross_attn' or 'enc_to_dec_proj' -> LR = lr_xattn.
     - decoder group:  every other trainable decoder param (e.g. wte,
                       lm_head, attn, mlp, ln_*) -> LR = lr_decoder.
     - no-decay:       biases, LayerNorm/ln_* weights, and any 1-D param
