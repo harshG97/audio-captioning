@@ -385,3 +385,99 @@ def test_feature_width_check_uses_the_model_input(wide_recap, data_files, tmp_pa
         f["x"] = np.zeros((ENC_LEN, WIDE), dtype=np.float32)
     with pytest.raises(SystemExit, match="96-wide features but the model reads 64-wide"):
         train.check_feature_width(str(wrong), train.model_input_width(model))
+
+
+# ---- minimum caption length ----
+
+def _eos_eager(model, eos_id, boost=100.0):
+    """Make the model want to end every caption immediately, so the effect of
+    min_new_tokens is visible: it adds `boost` to the end-of-caption logit."""
+    def hook(module, inputs, output):
+        output = output.clone()
+        output[..., eos_id] += boost
+        return output
+    return model.decoder.lm_head.register_forward_hook(hook)
+
+
+def _generate_ids(model, tok, data_files, num_beams, min_new_tokens, max_new_tokens=20):
+    """Run generate_caption and return the raw generated suffix token ids."""
+    seen = []
+    original = model.generate
+
+    def spy(*args, **kwargs):
+        out = original(*args, **kwargs)
+        seen.append(out[0].tolist())
+        return out
+
+    model.generate = spy
+    try:
+        ds = _dataset(data_files, tok)
+        enc = ds[0]["encoder_hidden_states"].unsqueeze(0)
+        prompt_ids = tok(build_prompt(RETRIEVED["abc_0"]), add_special_tokens=False)["input_ids"]
+        _, reason = generate_caption(
+            model=model, tokenizer=tok, encoder_hidden=enc, decoder_start_id=ds.dec_start,
+            prompt_ids=prompt_ids, eos_id=tok.eos_token_id, max_new_tokens=max_new_tokens,
+            num_beams=num_beams, device=torch.device("cpu"), length_penalty=0.0,
+            return_stop_reason=True, min_new_tokens=min_new_tokens)
+    finally:
+        model.generate = original
+    return seen[-1][1 + len(prompt_ids):], reason
+
+
+@pytest.mark.parametrize("num_beams", [1, 3])
+def test_min_new_tokens_delays_the_end_of_the_caption(recap, data_files, num_beams):
+    model, tok = recap
+    model.eval()
+    eos = tok.eos_token_id
+    handle = _eos_eager(model, eos)
+    try:
+        free, reason0 = _generate_ids(model, tok, data_files, num_beams, min_new_tokens=0)
+        assert free[0] == eos and reason0 == "eos"            # ends at once when allowed
+        for n in (3, 7):
+            ids, reason = _generate_ids(model, tok, data_files, num_beams, min_new_tokens=n)
+            assert eos not in ids[:n]                          # blocked for n tokens...
+            assert ids[n] == eos and reason == "eos"           # ...then ends right away
+    finally:
+        handle.remove()
+
+
+@pytest.mark.parametrize("num_beams", [1, 3])
+def test_min_new_tokens_zero_changes_nothing(recap, data_files, num_beams):
+    """0 must leave generation exactly as before: no minimum reaches
+    generate(), and the caption equals one made without the option."""
+    model, tok = recap
+    model.eval()
+    calls = []
+    original = model.generate
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    model.generate = spy
+    try:
+        ds = _dataset(data_files, tok)
+        enc = ds[0]["encoder_hidden_states"].unsqueeze(0)
+        prompt_ids = tok(build_prompt(RETRIEVED["abc_0"]), add_special_tokens=False)["input_ids"]
+        common = dict(model=model, tokenizer=tok, encoder_hidden=enc, decoder_start_id=ds.dec_start,
+                      prompt_ids=prompt_ids, eos_id=tok.eos_token_id, max_new_tokens=12,
+                      num_beams=num_beams, device=torch.device("cpu"), length_penalty=0.0)
+        without = generate_caption(**common)
+        with_zero = generate_caption(**common, min_new_tokens=0)
+    finally:
+        model.generate = original
+    assert with_zero == without
+    assert all(c.get("min_new_tokens") is None for c in calls)
+
+
+def test_min_new_tokens_is_validated(monkeypatch):
+    import evaluate
+    base = ["evaluate.py", "--checkpoint", "c", "--csv_path", "x.csv", "--hdf5_path", "x.h5",
+            "--retrieval_cache", "r.json", "--output_path", "o.json"]
+    for bad in (["--min_new_tokens", "-1"], ["--min_new_tokens", "60"],
+                ["--min_new_tokens", "10", "--max_new_tokens", "10"]):
+        monkeypatch.setattr(sys, "argv", base + bad)
+        with pytest.raises(SystemExit):
+            evaluate.parse_args()
+    monkeypatch.setattr(sys, "argv", base + ["--min_new_tokens", "10"])
+    assert evaluate.parse_args().min_new_tokens == 10

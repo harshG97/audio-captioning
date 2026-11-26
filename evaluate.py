@@ -57,8 +57,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no_repeat_ngram_size", type=int, default=0,
                    help="Forbid generating n-grams of this size that already appeared in the "
                         "generated suffix. 0 disables blocking (default).")
+    p.add_argument("--min_new_tokens", type=int, default=0,
+                   help="Do not end a caption before it has this many tokens (the end-of-"
+                        "caption token is blocked until then; GPT-2 uses about 1.3 tokens "
+                        "per word). 0 disables it (default).")
     p.add_argument("--device", type=str, default=None)
-    return p.parse_args()
+    args = p.parse_args()
+    if not 0 <= args.min_new_tokens < args.max_new_tokens:
+        p.error("--min_new_tokens must be 0 or more and below --max_new_tokens")
+    return args
 
 
 def _build_prompt_ids(tokenizer, prompt: str, max_prompt_length: int) -> List[int]:
@@ -127,10 +134,13 @@ def generate_caption(
     length_penalty: float = 1.0,
     no_repeat_ngram_size: int = 0,
     return_stop_reason: bool = False,
+    min_new_tokens: int = 0,
 ):
     """Generate one caption. Returns the decoded text, or (text, stop_reason)
     when return_stop_reason=True, where stop_reason is "eos" (the model ended
-    the caption itself) or "max_new_tokens" (it ran into the token limit)."""
+    the caption itself) or "max_new_tokens" (it ran into the token limit).
+    min_new_tokens > 0 blocks the end-of-caption token until that many tokens
+    follow the prompt."""
     encoder_outputs = BaseModelOutput(last_hidden_state=encoder_hidden.to(device))
     decoder_input_ids = torch.tensor(
         [[decoder_start_id, *prompt_ids]], dtype=torch.long, device=device
@@ -153,6 +163,8 @@ def generate_caption(
         pad_token_id=tokenizer.pad_token_id,
         logits_processor=logits_processor,
         use_cache=True,
+        # None (not 0) leaves the generation config untouched when unused.
+        min_new_tokens=min_new_tokens if min_new_tokens > 0 else None,
     )
 
     gen_ids = out[0, suffix_start:].tolist()
@@ -191,6 +203,9 @@ def main() -> None:
     warn_if_cache_has_placeholders(cache, source=args.retrieval_cache)
     k = args.retrieval_k if args.retrieval_k is not None else checkpoint_retrieval_k(model.config)
     print(f"Retrieved captions per prompt: {k if k is not None else 'all in cache'}")
+    print(f"Decoding: num_beams={args.num_beams} length_penalty={args.length_penalty} "
+          f"no_repeat_ngram_size={args.no_repeat_ngram_size} "
+          f"min_new_tokens={args.min_new_tokens} max_new_tokens={args.max_new_tokens}")
 
     # Group references by access_id (val/test clips have multiple gold captions)
     references_by_id: dict[str, list[str]] = {}
@@ -222,6 +237,7 @@ def main() -> None:
                 length_penalty=args.length_penalty,
                 no_repeat_ngram_size=args.no_repeat_ngram_size,
                 return_stop_reason=True,
+                min_new_tokens=args.min_new_tokens,
             )
             pred_raw = pred_raw.strip().lower()
 

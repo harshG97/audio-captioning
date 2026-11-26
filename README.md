@@ -580,7 +580,11 @@ Three `metrics_test.json` files give you the comparison table:
 - **Generation knobs** in `evaluate.py` default to the RECAP reference
   inference: `--num_beams 3`, `--max_new_tokens 60`, `--length_penalty 0`
   (summed log-prob; ignored for greedy), `--no_repeat_ngram_size 0`.
-  `--num_beams 1` gives greedy decoding.
+  `--num_beams 1` gives greedy decoding. Beam search with length penalty 0
+  favors short captions (about 6 words, against about 10 in the
+  references): `--length_penalty` above 0 and `--min_new_tokens N` (no end of
+  caption before N tokens, about 1.3 tokens per word) lengthen them; pair a
+  minimum with `--no_repeat_ngram_size 3` to avoid repetition.
 - **Scoring.** `score_predictions.py` PTB-tokenizes references and
   predictions (needs Java), as in the standard COCO/DCASE evaluation, and
   reports METEOR and SPICE/SPIDEr unless `--skip_meteor` or `--skip_spice`.
