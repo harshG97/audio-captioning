@@ -157,6 +157,29 @@ fi
 EARLY_ARGS=()
 [ "$PATIENCE" -gt 0 ] && EARLY_ARGS=(--early_stopping_patience "$PATIENCE")
 
+# Training on more than the paper split (TRAIN_DIR): every clip beyond the
+# paper train clips must have features and a retrieval entry. The dataset
+# skips clips without them, so a features or cache folder left at its paper
+# default would otherwise train on the paper clips alone, without a word.
+if cmp -s "$DATA_DIR/val.csv" data/paper_split/val.csv && ! cmp -s "$DATA_DIR/train.csv" data/paper_split/train.csv; then
+    python - "$DATA_DIR/train.csv" data/paper_split/train.csv "$FEAT_DIR/audiocaps_train.hdf5" "$(cache train)" <<'EOF'
+import json, sys, h5py, pandas as pd
+sys.path.insert(0, ".")
+from data.access_id import build_access_id_column
+from data.caption_filter import drop_placeholder_captions
+train_csv, paper_csv, hdf5, cache = sys.argv[1:]
+ids = lambda p: set(drop_placeholder_captions(build_access_id_column(pd.read_csv(p, dtype={"youtube_id": str}), "audiocaps"))["access_id"].astype(str))
+extra = ids(train_csv) - ids(paper_csv)
+with h5py.File(hdf5, "r") as f:
+    no_feat = extra - set(f.keys())
+no_cache = extra - set(json.load(open(cache)))
+print(f"training clips beyond the paper split: {len(extra)}")
+if no_feat or no_cache:
+    sys.exit(f"{len(no_feat)} of them have no features in {hdf5} and {len(no_cache)} no entry "
+             f"in {cache}: point FEAT_DIR / CACHE_DIR at folders built for {train_csv}")
+EOF
+fi
+
 # 1. Train (resumes from the last checkpoint if the job was cut short)
 DECODER_ARGS=()
 [ "$TRAIN_DECODER" = 1 ] && DECODER_ARGS=(--train_decoder)

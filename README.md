@@ -278,8 +278,12 @@ TRAIN_DIR=data/expanded/cap3 K=3 DECODER_NAME=gpt2-medium FEAT_DIR=$HOME/scratch
   CACHE_DIR=$HOME/scratch/recap/features_unfused_plus TAG=beats-medium-cap3 scripts/submit.sh run-a
 ```
 
-The summary's `train_copy_rate` then counts copies of the expanded training
-captions, so it is not directly comparable with paper-split runs.
+Before training, the job stops if any clip beyond the paper train clips has
+no features in `FEAT_DIR` or no entry in the train cache: the dataset skips
+such clips, so a folder left at its paper default would otherwise train on
+the paper clips alone. The summary's `train_copy_rate` then counts copies of
+the expanded training captions, so it is not directly comparable with
+paper-split runs.
 
 ### Running on a single GPU machine (no Slurm)
 
