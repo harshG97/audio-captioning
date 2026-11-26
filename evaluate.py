@@ -30,6 +30,7 @@ from transformers.modeling_outputs import BaseModelOutput
 from data.access_id import DATASETS, build_access_id_column
 from data.caption_filter import warn_if_cache_has_placeholders
 from model.device import best_device
+from model.prefix_lm import AudioPrefixLM, load_captioner
 from model.recap import RECAP
 from retrieval.prompt_builder import GENERATION_STOP_STRINGS, build_prompt, checkpoint_retrieval_k, first_k
 
@@ -179,12 +180,20 @@ def generate_caption(
     when return_stop_reason=True, where stop_reason is "eos" (the model ended
     the caption itself) or "max_new_tokens" (it ran into the token limit).
     min_new_tokens > 0 holds back every token that would end the caption (EOS,
-    ".", newline) until that many tokens follow the prompt."""
-    encoder_outputs = BaseModelOutput(last_hidden_state=encoder_hidden.to(device))
+    ".", newline) until that many tokens follow the prompt.
+
+    The prefix model (AudioPrefixLM) gets the same start token and prompt
+    after its audio tokens; its output holds only the new tokens."""
     decoder_input_ids = torch.tensor(
         [[decoder_start_id, *prompt_ids]], dtype=torch.long, device=device
     )
-    suffix_start = decoder_input_ids.shape[1]
+    if isinstance(model, AudioPrefixLM):
+        inputs = dict(encoder_hidden_states=encoder_hidden.to(device), input_ids=decoder_input_ids)
+        suffix_start = 0
+    else:
+        inputs = dict(encoder_outputs=BaseModelOutput(last_hidden_state=encoder_hidden.to(device)),
+                      decoder_input_ids=decoder_input_ids)
+        suffix_start = decoder_input_ids.shape[1]
 
     logits_processor = LogitsProcessorList()
     if no_repeat_ngram_size > 0:
@@ -195,8 +204,7 @@ def generate_caption(
         logits_processor.append(SuffixMinLengthLogitsProcessor(
             min_new_tokens, suffix_start, caption_end_token_ids(tokenizer, eos_id)))
     out = model.generate(
-        encoder_outputs=encoder_outputs,
-        decoder_input_ids=decoder_input_ids,
+        **inputs,
         max_new_tokens=max_new_tokens,
         num_beams=num_beams,
         length_penalty=length_penalty,
@@ -224,7 +232,7 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.checkpoint)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = RECAP.from_pretrained(args.checkpoint).to(device)
+    model = load_captioner(args.checkpoint).to(device)
     model.eval()
 
     decoder_start_id = (

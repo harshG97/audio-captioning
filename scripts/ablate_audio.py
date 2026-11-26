@@ -40,7 +40,7 @@ from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
 from retrieval.prompt_builder import checkpoint_retrieval_k
 from model.device import best_device
-from model.recap import RECAP
+from model.prefix_lm import load_captioner
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,7 +84,7 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = RECAP.from_pretrained(args.checkpoint).to(device)
+    model = load_captioner(args.checkpoint).to(device)   # RECAP or the prefix model
     model.eval()
 
     dataset = RecapDataset(

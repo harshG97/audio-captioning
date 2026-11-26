@@ -53,6 +53,16 @@ FEATURES=$ENCODER_NAME
 DECODER_NAME=${DECODER_NAME:-gpt2}
 XATTN=${XATTN:-7}             # cross-attention size in millions: 28 14 7 3.5 1.75
 TRAIN_DECODER=${TRAIN_DECODER:-0}   # 1 = fine-tune all of GPT-2 too
+# xattn: RECAP (GPT-2 + cross-attention). prefix: a decoder-only LLM
+# (DECODER_NAME, e.g. Qwen/Qwen2.5-1.5B) reading the audio as prefix tokens,
+# trained with LoRA (model/prefix_lm.py); XATTN and TRAIN_DECODER do not apply.
+ARCH=${ARCH:-xattn}
+case $ARCH in
+    xattn) ;;
+    prefix) [ "$XATTN" = 7 ] && [ "$TRAIN_DECODER" = 0 ] \
+                || { echo "ARCH=prefix: XATTN and TRAIN_DECODER do not apply" >&2; exit 1; } ;;
+    *) echo "ARCH must be xattn or prefix (got $ARCH)" >&2; exit 1 ;;
+esac
 # best: keep the epoch with the lowest val loss (early stopping if PATIENCE>0).
 # last: train all EPOCHS and keep the last, as RECAP's own code does. Every
 # CHECKPOINT_EVERY-th epoch (20) and the lowest-val-loss epoch (snapshots/best)
@@ -106,6 +116,7 @@ if [ "$KEEP" != best ] || [ "$SNAPSHOT_EVERY" != 0 ] || [ "$CHECKPOINT_EVERY" !=
     settings+=$'\n'"KEEP=$KEEP"$'\n'"SNAPSHOT_EVERY=$SNAPSHOT_EVERY"$'\n'"CHECKPOINT_EVERY=$CHECKPOINT_EVERY"
 fi
 [ -z "$RESUME_FROM" ] || settings+=$'\n'"RESUME_FROM=$RESUME_FROM"
+[ "$ARCH" = xattn ] || settings+=$'\n'"ARCH=$ARCH"
 if [ -f "$RUN_DIR/settings.txt" ]; then
     if ! diff <(cat "$RUN_DIR/settings.txt") <(echo "$settings") > /dev/null; then
         echo "$RUN_DIR was started with different settings (< before, > now):" >&2
@@ -121,7 +132,11 @@ echo "host: $(hostname)  job: ${SLURM_JOB_ID:-local}  start: $(date)"
 echo "run: $RUN_DIR"
 cache_label=top${CACHE_K}${CACHE_VARIANT}
 [ "$K" -eq 0 ] && cache_label=empty
-echo "encoder=$ENCODER_NAME decoder=$DECODER_NAME xattn=${XATTN}M train_decoder=$TRAIN_DECODER keep=$KEEP snapshot_every=$SNAPSHOT_EVERY checkpoint_every=$CHECKPOINT_EVERY"
+if [ "$ARCH" = prefix ]; then
+    echo "arch=prefix decoder=$DECODER_NAME (LoRA r=16, 4x pooled audio) keep=$KEEP snapshot_every=$SNAPSHOT_EVERY checkpoint_every=$CHECKPOINT_EVERY"
+else
+    echo "encoder=$ENCODER_NAME decoder=$DECODER_NAME xattn=${XATTN}M train_decoder=$TRAIN_DECODER keep=$KEEP snapshot_every=$SNAPSHOT_EVERY checkpoint_every=$CHECKPOINT_EVERY"
+fi
 echo "K=$K cache=$cache_label epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
 echo "train csv: $DATA_DIR/train.csv  features: $FEAT_DIR ($FEATURES)  caches: $CACHE_DIR"
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| cuda', torch.cuda.is_available())"
@@ -183,6 +198,11 @@ fi
 # 1. Train (resumes from the last checkpoint if the job was cut short)
 DECODER_ARGS=()
 [ "$TRAIN_DECODER" = 1 ] && DECODER_ARGS=(--train_decoder)
+if [ "$ARCH" = prefix ]; then
+    ARCH_ARGS=(--arch prefix)
+else
+    ARCH_ARGS=(--arch xattn --attention_size "$XATTN")
+fi
 BEST_ARGS=(--load_best_model_at_end)
 [ "$KEEP" = last ] && BEST_ARGS=(--track_best)
 [ -n "$RESUME_FROM" ] && BEST_ARGS+=(--resume_from "$RESUME_FROM")
@@ -193,7 +213,7 @@ step train python train.py \
     --val_retrieval_cache "$(cache val)" \
     --output_dir "$RUN_DIR" \
     --encoder_name "$ENCODER_NAME" --decoder_name "$DECODER_NAME" \
-    --attention_size "$XATTN" "${DECODER_ARGS[@]}" \
+    "${ARCH_ARGS[@]}" "${DECODER_ARGS[@]}" \
     "${RAG_ARGS[@]}" --prompt_dropout "$PROMPT_DROPOUT" \
     --num_train_epochs "$EPOCHS" --per_device_train_batch_size "$BATCH" \
     --per_device_eval_batch_size "$BATCH" --learning_rate "$LR" --seed "$SEED" \

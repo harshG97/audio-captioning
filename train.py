@@ -24,6 +24,7 @@ from transformers import EarlyStoppingCallback, Trainer, TrainerCallback, Traini
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
 from model.build_recap import ATTENTION_SIZE_TO_REDUCE_FACTOR, build_recap
+from model.prefix_lm import AudioPrefixLM, build_prefix_lm
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,8 +38,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dataset", type=str, default="audiocaps", choices=DATASETS)
     p.add_argument("--output_dir", type=str, required=True)
 
+    p.add_argument("--arch", choices=["xattn", "prefix"], default="xattn",
+                   help="xattn (default): RECAP, GPT-2 with cross-attention to the audio. "
+                        "prefix: a decoder-only LLM (--decoder_name, e.g. Qwen/Qwen2.5-1.5B) "
+                        "reading the audio as prefix tokens, trained with LoRA "
+                        "(model/prefix_lm.py).")
     p.add_argument("--encoder_name", type=str, default="laion/clap-htsat-fused")
     p.add_argument("--decoder_name", type=str, default="gpt2")
+    p.add_argument("--audio_pool", type=int, default=4,
+                   help="prefix: average this many feature vectors per audio token (default 4).")
+    p.add_argument("--lora_r", type=int, default=16, help="prefix: LoRA rank (default 16).")
+    p.add_argument("--lora_alpha", type=int, default=32, help="prefix: LoRA alpha (default 32).")
     p.add_argument("--max_length", type=int, default=128)
     p.add_argument(
         "--prompt_dropout", type=float, default=0.0,
@@ -169,6 +179,10 @@ def parse_args() -> argparse.Namespace:
         p.error("--track_best needs a validation set (--val_csv)")
 
     # Resolve attention-size flags.
+    if args.arch == "prefix" and (args.attention_size is not None or args.cross_attention_reduce_factor
+                                  is not None or args.train_decoder or args.xattn_zero_init):
+        p.error("--arch prefix has no cross-attention and trains LoRA, not the decoder: "
+                "drop --attention_size / --cross_attention_reduce_factor / --train_decoder / --xattn_zero_init")
     if args.attention_size is not None:
         args.cross_attention_reduce_factor = ATTENTION_SIZE_TO_REDUCE_FACTOR[args.attention_size]
     elif args.cross_attention_reduce_factor is None:
@@ -338,7 +352,10 @@ def feature_width(hdf5_path: str) -> int:
 
 def model_input_width(model) -> int:
     """Width of the encoder features the model reads: the projection's input
-    when the encoder and decoder widths differ, otherwise the decoder's."""
+    when the encoder and decoder widths differ, otherwise the decoder's (for
+    the prefix model, the projector's input)."""
+    if isinstance(model, AudioPrefixLM):
+        return model.config.feature_width
     proj = getattr(model, "enc_to_dec_proj", None)
     return proj.in_features if proj is not None else model.decoder.config.hidden_size
 
@@ -361,14 +378,23 @@ def main() -> None:
     # initialised there, and the Trainer only seeds when it is created.
     set_seed(args.seed)
 
-    model, tokenizer = build_recap(
-        encoder_name=args.encoder_name,
-        decoder_name=args.decoder_name,
-        cross_attention_reduce_factor=args.cross_attention_reduce_factor,
-        freeze_encoder=True,
-        train_decoder=args.train_decoder,
-        xattn_zero_init=args.xattn_zero_init,
-    )
+    if args.arch == "prefix":
+        model, tokenizer = build_prefix_lm(
+            llm_name=args.decoder_name,
+            feature_width=feature_width(args.train_hdf5),
+            audio_pool=args.audio_pool,
+            lora_r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+        )
+    else:
+        model, tokenizer = build_recap(
+            encoder_name=args.encoder_name,
+            decoder_name=args.decoder_name,
+            cross_attention_reduce_factor=args.cross_attention_reduce_factor,
+            freeze_encoder=True,
+            train_decoder=args.train_decoder,
+            xattn_zero_init=args.xattn_zero_init,
+        )
 
     input_width = model_input_width(model)
     check_feature_width(args.train_hdf5, input_width)

@@ -20,7 +20,7 @@ CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT", "KEEP", "PATIENCE",
            "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM", "CHECKPOINT_EVERY",
            "BEATS_CKPT", "POOL", "DATA_DIR", "MATCH_FEAT_DIR",
-           "TRAIN_DIR", "EMB_DIR", "DATASTORE_DIR", "CAP", "DROP_PCT"]
+           "TRAIN_DIR", "EMB_DIR", "DATASTORE_DIR", "CAP", "DROP_PCT", "ARCH", "LR"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -189,3 +189,27 @@ def test_expand_data_defaults(tmp_path):
     assert got["DATASTORE_DIR"] == str(tmp_path / "recap" / "features_unfused")
     assert got["CACHE_DIR"] == str(tmp_path / "recap" / "features_unfused_plus")
     assert submit("expand-data", tmp_path, AUDIO_DIR="").returncode != 0
+
+
+@pytest.mark.parametrize("job, name", [("run-a", "a_paper_k4_prefix_s42"), ("run-c", "c_paper_k0_prefix_s42")])
+def test_prefix_arch_defaults(tmp_path, job, name):
+    got = settings(submit(job, tmp_path, ARCH="prefix"))
+    assert got["RUN_NAME"] == name and got["ARCH"] == "prefix"
+    assert got["DECODER_NAME"] == "Qwen/Qwen2.5-1.5B"
+    assert (got["EPOCHS"], got["PATIENCE"], got["LR"]) == ("20", "3", "1e-4")
+    got = settings(submit(job, tmp_path, ARCH="prefix", EPOCHS=5, LR="2e-4"))
+    assert (got["EPOCHS"], got["LR"]) == ("5", "2e-4")
+
+
+def test_prefix_arch_rejects_cross_attention_settings(tmp_path):
+    assert submit("run-a", tmp_path, ARCH="prefix", XATTN=28).returncode != 0
+    assert submit("run-a", tmp_path, ARCH="prefix", TRAIN_DECODER=1).returncode != 0
+    assert submit("run-a", tmp_path, ARCH="nope").returncode != 0
+    # another LLM is a different model: it needs a TAG like any DECODER_NAME
+    assert submit("run-a", tmp_path, ARCH="prefix", DECODER_NAME="meta-llama/Llama-3.2-1B").returncode != 0
+    assert settings(submit("run-a", tmp_path, ARCH="prefix", DECODER_NAME="meta-llama/Llama-3.2-1B",
+                           TAG="llama"))["RUN_NAME"] == "a_paper_k4_prefix_llama_s42"
+
+
+def test_default_runs_keep_the_old_learning_rate(tmp_path):
+    assert "LR" not in settings(submit("run-a", tmp_path))

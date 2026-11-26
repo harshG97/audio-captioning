@@ -27,6 +27,9 @@
 #   XATTN=28|14|7|3.5|1.75   cross-attention size in millions (default 7)  -> _x28
 #   TRAIN_DECODER=1          fine-tune all of GPT-2, not just cross-attention -> _ftdec
 #   PROMPT_DROPOUT=0.3       train without the retrieved captions 30% of the time -> _pd0.3
+#   ARCH=prefix              a decoder-only LLM (DECODER_NAME, default Qwen/Qwen2.5-1.5B)
+#                            reading the audio as prefix tokens, with LoRA; defaults
+#                            EPOCHS=20 PATIENCE=3 LR=1e-4                     -> _prefix
 #   KEEP=last                train all EPOCHS without early stopping and keep the
 #                            last epoch, as RECAP's code does. snapshots/ gets full,
 #                            resumable checkpoints every CHECKPOINT_EVERY (20)
@@ -139,6 +142,19 @@ case ${KEEP:-best} in
     best) ;;
     last) VARIANT+="_last" ;;
     *) echo "KEEP must be best or last (got $KEEP)" >&2; exit 1 ;;
+esac
+case ${ARCH:-xattn} in
+    xattn) ;;
+    prefix)
+        if { [ -n "${XATTN:-}" ] && [ "$XATTN" != 7 ]; } || [ "${TRAIN_DECODER:-0}" != 0 ]; then
+            echo "ARCH=prefix has no cross-attention and trains LoRA: XATTN and TRAIN_DECODER do not apply" >&2; exit 1
+        fi
+        VARIANT+="_prefix"
+        # An LLM with LoRA converges in far fewer epochs than RECAP's
+        # cross-attention, at a higher learning rate.
+        export DECODER_NAME=${DECODER_NAME:-Qwen/Qwen2.5-1.5B} EPOCHS=${EPOCHS:-20} \
+               PATIENCE=${PATIENCE:-3} LR=${LR:-1e-4} ;;
+    *) echo "ARCH must be xattn or prefix (got $ARCH)" >&2; exit 1 ;;
 esac
 if [ -n "${TAG:-}" ]; then
     [[ $TAG =~ ^[A-Za-z0-9.-]+$ ]] || { echo "TAG may only use letters, digits, . and - (got $TAG)" >&2; exit 1; }
@@ -254,7 +270,7 @@ if [ "$LOCAL" = 1 ]; then
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -269,7 +285,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

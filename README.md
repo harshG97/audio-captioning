@@ -251,6 +251,27 @@ still carries CLAP's encoder config, which only gives the feature width
 (768, as for BEATs): new audio must go through `extract_beats_features.py`.
 `data/audioset_labels.csv` is the AudioSet label list (Google, CC BY 4.0).
 
+**An LLM decoder (`ARCH=prefix`).** Instead of GPT-2 with cross-attention,
+a decoder-only LLM (default `Qwen/Qwen2.5-1.5B`) reads the audio as prefix
+tokens: the features are average-pooled 4x (124 BEATs vectors give 31
+tokens) and mapped to the LLM's width by a small MLP, followed by the same
+start token, RECAP prompt and caption as before (`model/prefix_lm.py`). The
+LLM stays frozen; LoRA (rank 16, on attention and MLP layers) and the
+projector are trained, about 22M parameters for Qwen2.5-1.5B. Checkpoints
+hold only those weights; loading rebuilds the base LLM from its name. It
+needs `peft` (`pip install peft==0.13.2`). Defaults change to `EPOCHS=20`,
+`PATIENCE=3`, `LR=1e-4`, since LoRA converges far faster; runs get a
+`_prefix` suffix, and another LLM (`DECODER_NAME`) needs a `TAG`:
+
+```bash
+ARCH=prefix K=3 FEAT_DIR=$HOME/scratch/recap/features_beats CACHE_DIR=$HOME/scratch/recap/features_unfused \
+  TAG=beats scripts/submit.sh run-a
+ARCH=prefix FEAT_DIR=$HOME/scratch/recap/features_beats TAG=beats scripts/submit.sh run-c
+```
+
+Evaluation, the audio ablation and the copy baseline work as for RECAP;
+`evaluate.py` and `scripts/ablate_audio.py` detect the model type.
+
 **More training data.** The paper split trains on 42,797 of AudioCaps 2.0's
 91,254 train clips. `scripts/submit.sh expand-data` (after `preprocess`)
 adds the other 48,457, filtered by `data/build_expanded_split.py`:
