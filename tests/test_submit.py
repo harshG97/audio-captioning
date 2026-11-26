@@ -19,7 +19,7 @@ CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "K", "SEED", "DEDUP", "XATTN", "TRAIN_DECODER", "PROMPT_DROPOUT", "TAG",
            "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT", "KEEP", "PATIENCE",
            "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM", "CHECKPOINT_EVERY",
-           "BEATS_CKPT", "POOL", "DATA_DIR"]
+           "BEATS_CKPT", "POOL", "DATA_DIR", "MATCH_FEAT_DIR"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -145,6 +145,7 @@ def test_beats_features_defaults(tmp_path):
     assert got["FEAT_DIR"] == str(tmp_path / "recap" / "features_beats")
     assert got["DATA_DIR"] == "data/paper_split"
     assert got["BEATS_CKPT"] == str(tmp_path / "b.pt")
+    assert got["MATCH_FEAT_DIR"] == str(tmp_path / "recap" / "features")
     got = settings(submit("beats-features", tmp_path, BEATS_CKPT="b.pt", POOL=1,
                           FEAT_DIR=tmp_path / "fb"))
     assert got["FEAT_DIR"] == str(tmp_path / "fb") and got["POOL"] == "1"

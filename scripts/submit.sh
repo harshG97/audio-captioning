@@ -150,7 +150,8 @@ case $job in
     beats-features)
         script=scripts/phoenix_beats.sbatch; time=02:00:00
         : "${BEATS_CKPT:?set BEATS_CKPT to the BEATs .pt checkpoint}"
-        export FEAT_DIR=${ORIG_FEAT_DIR:-$SCRATCH_RECAP/features_beats} DATA_DIR=${DATA_DIR:-data/paper_split} ;;
+        export FEAT_DIR=${ORIG_FEAT_DIR:-$SCRATCH_RECAP/features_beats} DATA_DIR=${DATA_DIR:-data/paper_split} \
+               MATCH_FEAT_DIR=${MATCH_FEAT_DIR:-$SCRATCH_RECAP/features} ;;
     g1)
         script=scripts/phoenix_train.sbatch; time=03:00:00
         export RUN_NAME=${RUN_NAME:-g1_k${K:-0}${VARIANT}_s$SEED} K=${K:-0} EPOCHS=${EPOCHS:-1} \
@@ -229,7 +230,7 @@ if [ "$LOCAL" = 1 ]; then
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -244,7 +245,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

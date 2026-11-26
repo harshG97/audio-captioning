@@ -58,9 +58,10 @@ def parse_args() -> argparse.Namespace:
                    help="Forbid generating n-grams of this size that already appeared in the "
                         "generated suffix. 0 disables blocking (default).")
     p.add_argument("--min_new_tokens", type=int, default=0,
-                   help="Do not end a caption before it has this many tokens (the end-of-"
-                        "caption token is blocked until then; GPT-2 uses about 1.3 tokens "
-                        "per word). 0 disables it (default).")
+                   help="Do not end a caption before it has this many tokens: EOS and "
+                        "tokens containing '.' or a newline, where captions are cut, are "
+                        "blocked until then (GPT-2 uses about 1.3 tokens per word). 0 "
+                        "disables it (default).")
     p.add_argument("--device", type=str, default=None)
     args = p.parse_args()
     if not 0 <= args.min_new_tokens < args.max_new_tokens:
@@ -102,6 +103,44 @@ class SuffixNoRepeatNGramLogitsProcessor(LogitsProcessor):
                 scores[i, list(banned)] = float("-inf")
         return scores
 
+# Stop strings a single token can contain; clean_prediction cuts the caption at
+# the first of them, so a minimum length must hold these back as well as EOS.
+TOKEN_STOP_STRINGS = tuple(s for s in GENERATION_STOP_STRINGS if len(s) <= 2)
+
+
+def caption_end_token_ids(tokenizer, eos_id: int) -> List[int]:
+    """EOS (for RECAP the "." token, see wire_special_tokens) plus every token
+    whose text contains a stop string, such as "...", ".," or a newline: each
+    ends the caption, by stopping generation or by the cut in
+    clean_prediction. Cached on the tokenizer."""
+    cache = tokenizer.__dict__.setdefault("_caption_end_token_ids", {})
+    if eos_id not in cache:
+        ids = {eos_id}
+        for tid in range(len(tokenizer)):
+            text = tokenizer.decode([tid]).lower()
+            if any(stop in text for stop in TOKEN_STOP_STRINGS):
+                ids.add(tid)
+        cache[eos_id] = sorted(ids)
+    return cache[eos_id]
+
+
+class SuffixMinLengthLogitsProcessor(LogitsProcessor):
+    """Forbid the tokens that end a caption until the generated suffix has
+    min_new_tokens tokens. Hugging Face's min_new_tokens blocks only EOS, so
+    the model could still end early with a token such as "..." or a newline,
+    where clean_prediction cuts the caption."""
+
+    def __init__(self, min_new_tokens: int, suffix_start: int, end_ids: List[int]):
+        self.min_new_tokens = min_new_tokens
+        self.suffix_start = suffix_start
+        self.end_ids = end_ids
+
+    def __call__(self, input_ids: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+        if input_ids.shape[1] - self.suffix_start < self.min_new_tokens:
+            scores[:, self.end_ids] = float("-inf")
+        return scores
+
+
 def clean_prediction(text, stop_strings):
     """
     Truncates the string at the first occurrence of any stop string 
@@ -139,8 +178,8 @@ def generate_caption(
     """Generate one caption. Returns the decoded text, or (text, stop_reason)
     when return_stop_reason=True, where stop_reason is "eos" (the model ended
     the caption itself) or "max_new_tokens" (it ran into the token limit).
-    min_new_tokens > 0 blocks the end-of-caption token until that many tokens
-    follow the prompt."""
+    min_new_tokens > 0 holds back every token that would end the caption (EOS,
+    ".", newline) until that many tokens follow the prompt."""
     encoder_outputs = BaseModelOutput(last_hidden_state=encoder_hidden.to(device))
     decoder_input_ids = torch.tensor(
         [[decoder_start_id, *prompt_ids]], dtype=torch.long, device=device
@@ -152,6 +191,9 @@ def generate_caption(
         logits_processor.append(
             SuffixNoRepeatNGramLogitsProcessor(no_repeat_ngram_size, suffix_start)
         )
+    if min_new_tokens > 0:
+        logits_processor.append(SuffixMinLengthLogitsProcessor(
+            min_new_tokens, suffix_start, caption_end_token_ids(tokenizer, eos_id)))
     out = model.generate(
         encoder_outputs=encoder_outputs,
         decoder_input_ids=decoder_input_ids,
@@ -163,8 +205,6 @@ def generate_caption(
         pad_token_id=tokenizer.pad_token_id,
         logits_processor=logits_processor,
         use_cache=True,
-        # None (not 0) leaves the generation config untouched when unused.
-        min_new_tokens=min_new_tokens if min_new_tokens > 0 else None,
     )
 
     gen_ids = out[0, suffix_start:].tolist()

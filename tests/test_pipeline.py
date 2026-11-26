@@ -36,7 +36,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from data.recap_dataset import RecapCollator, RecapDataset
-from evaluate import generate_caption
+from evaluate import (
+    SuffixMinLengthLogitsProcessor,
+    caption_end_token_ids,
+    clean_prediction,
+    generate_caption,
+)
+from retrieval.prompt_builder import GENERATION_STOP_STRINGS
 from model.build_recap import XATTN_PARAM_KEYS, build_recap, load_recap_checkpoint
 from retrieval.prompt_builder import BASELINE_PROMPT, build_prompt
 
@@ -468,6 +474,8 @@ def test_min_new_tokens_zero_changes_nothing(recap, data_files, num_beams):
         model.generate = original
     assert with_zero == without
     assert all(c.get("min_new_tokens") is None for c in calls)
+    assert not any(isinstance(p, SuffixMinLengthLogitsProcessor)
+                   for c in calls for p in c["logits_processor"])
 
 
 def test_min_new_tokens_is_validated(monkeypatch):
@@ -481,3 +489,39 @@ def test_min_new_tokens_is_validated(monkeypatch):
             evaluate.parse_args()
     monkeypatch.setattr(sys, "argv", base + ["--min_new_tokens", "10"])
     assert evaluate.parse_args().min_new_tokens == 10
+
+
+def test_caption_end_tokens(recap):
+    _, tok = recap
+    ends = caption_end_token_ids(tok, tok.eos_token_id)
+    assert tok.eos_token == "."                  # RECAP ends captions with "."
+    assert tok.eos_token_id in ends and tok("\n", add_special_tokens=False)["input_ids"][0] in ends
+    for tid in ends:
+        text = tok.decode([tid])
+        assert tid == tok.eos_token_id or "." in text or "\n" in text
+    assert tok("a", add_special_tokens=False)["input_ids"][0] not in ends
+
+
+@pytest.mark.parametrize("num_beams", [1, 3])
+def test_min_new_tokens_holds_back_other_caption_ends(recap, data_files, num_beams):
+    """EOS is "." for RECAP, but captions are also cut at other tokens (a
+    newline here; "..." or ".," in GPT-2's vocabulary), so the minimum must
+    block those too, or the kept caption would not get longer."""
+    model, tok = recap
+    model.eval()
+    newline = tok("\n", add_special_tokens=False)["input_ids"]
+    assert len(newline) == 1 and newline[0] != tok.eos_token_id
+    newline = newline[0]
+    handle = _eos_eager(model, newline)
+    try:
+        free, _ = _generate_ids(model, tok, data_files, num_beams, min_new_tokens=0)
+        assert free[0] == newline
+        assert clean_prediction(tok.decode(free).strip().lower(), GENERATION_STOP_STRINGS) == ""
+        ends = set(caption_end_token_ids(tok, tok.eos_token_id))
+        for n in (3, 7):
+            ids, _ = _generate_ids(model, tok, data_files, num_beams, min_new_tokens=n)
+            assert not ends & set(ids[:n]) and ids[n] == newline
+            kept = clean_prediction(tok.decode(ids).strip().lower(), GENERATION_STOP_STRINGS)
+            assert kept == tok.decode(ids[:n]).strip().lower() and kept
+    finally:
+        handle.remove()

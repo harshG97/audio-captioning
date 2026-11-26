@@ -180,3 +180,20 @@ def test_check_skips_a_checkpoint_without_a_classifier(audio, tmp_path, capsys):
              "--captions_csv", str(csv), "--output_dir", str(tmp_path), "--dataset", "audiocaps",
              "--check", "1"])
     assert "--check skipped" in capsys.readouterr().out
+
+
+def test_match_hdf5_stops_when_audio_is_missing(audio, checkpoint, tmp_path):
+    root, csv = audio
+    ref = tmp_path / "clap_val.hdf5"
+    with h5py.File(ref, "w") as f:                       # CLAP has all three clips
+        for yid, start, *_ in CLIPS:
+            f.create_dataset(f"{yid}_{start}", data=np.zeros((2, 2), np.float32))
+    feats = _extract(audio, tmp_path / "ok", checkpoint, "--match_hdf5", str(ref))
+    assert len(feats) == 3
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    for wav in list(root.glob("*.wav"))[:2]:
+        (partial / wav.name).symlink_to(wav)
+    with pytest.raises(SystemExit, match="1 clips"):
+        _extract((partial, csv), tmp_path / "bad", checkpoint, "--match_hdf5", str(ref))
+    assert not (tmp_path / "bad").exists()

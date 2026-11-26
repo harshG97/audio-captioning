@@ -154,6 +154,16 @@ def encode_to_hdf5(file_list, encoder: BEATsEncoder, output_path: str,
     return len(seen)
 
 
+def missing_against(file_list, captions_csv: str, dataset: str, reference_hdf5: str) -> list:
+    """Clips of the CSV that the reference features (e.g. CLAP's) cover but
+    whose audio was not found here: a comparison between the two would use
+    different clips, since training skips clips without features."""
+    ids = set(build_access_id_column(pd.read_csv(captions_csv), dataset)["access_id"].astype(str))
+    with h5py.File(reference_hdf5, "r") as f:
+        covered = ids & set(f.keys())
+    return sorted(covered - {audio_id for audio_id, _ in file_list})
+
+
 def label_names(path: str = LABELS_CSV) -> dict:
     """AudioSet label id (e.g. /m/09x0r) -> display name."""
     with open(path, newline="") as f:
@@ -191,6 +201,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "4 gives 124 vectors per 10 s clip, 1 keeps all 496 (default 4).")
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_workers", type=int, default=0, help="Processes for audio loading")
+    p.add_argument("--match_hdf5", default=None,
+                   help="Feature file to match (e.g. the CLAP features of this split): stop "
+                        "if any clip it has for this CSV has no audio here.")
     p.add_argument("--check", type=int, default=0, metavar="N",
                    help="Print top AudioSet labels for N clips and exit without writing.")
     args = p.parse_args(argv)
@@ -209,6 +222,11 @@ def main(argv=None) -> None:
     file_list = build_file_list(args.audio_dir, args.captions_csv, args.dataset)
     if not file_list:
         raise SystemExit("no audio files found")
+    if args.match_hdf5:
+        missing = missing_against(file_list, args.captions_csv, args.dataset, args.match_hdf5)
+        if missing:
+            raise SystemExit(f"{len(missing)} clips in {args.match_hdf5} have no audio in "
+                             f"{args.audio_dir} (e.g. {missing[:3]}); is the audio fully synced?")
     if args.check:
         check(file_list, encoder, label_dict, args.captions_csv, args.dataset, args.check)
         return

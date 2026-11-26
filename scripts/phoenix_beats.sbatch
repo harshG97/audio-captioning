@@ -31,6 +31,9 @@ FEAT_DIR=${FEAT_DIR:-$HOME/scratch/recap/features_beats}
 DATA_DIR=${DATA_DIR:-data/paper_split}
 BEATS_CKPT=${BEATS_CKPT:?set BEATS_CKPT to the BEATs .pt checkpoint}
 POOL=${POOL:-4}             # frequency bands averaged per time step: 4 -> 124 vectors, 1 -> 496
+# CLAP features to match: every clip they hold must get BEATs features, so the
+# two are compared on the same clips (training skips clips without features).
+MATCH_FEAT_DIR=${MATCH_FEAT_DIR:-$HOME/scratch/recap/features}
 WORKERS=${SLURM_CPUS_PER_TASK:-8}
 
 if [ "${SKIP_CONDA:-0}" != 1 ]; then
@@ -87,9 +90,16 @@ python data/extract_beats_features.py --checkpoint "$BEATS_CKPT" --audio_dir "$A
 
 # 1. BEATs features for cross-attention
 for split in train val test; do
+    match=()
+    if [ -f "$MATCH_FEAT_DIR/audiocaps_$split.hdf5" ]; then
+        match=(--match_hdf5 "$MATCH_FEAT_DIR/audiocaps_$split.hdf5")
+    else
+        echo "note: no $MATCH_FEAT_DIR/audiocaps_$split.hdf5 to match; clips without audio are skipped"
+    fi
     step "features_$split" python data/extract_beats_features.py --checkpoint "$BEATS_CKPT" \
         --audio_dir "$AUDIO_DIR" --captions_csv "$DATA_DIR/$split.csv" --output_dir "$FEAT_DIR" \
-        --dataset audiocaps --split "$split" --pool "$POOL" --batch_size 32 --num_workers "$WORKERS"
+        --dataset audiocaps --split "$split" --pool "$POOL" --batch_size 32 --num_workers "$WORKERS" \
+        ${match[@]+"${match[@]}"}
 done
 
 # 2. Empty caches for the no-retrieval baseline (run-c reads them from FEAT_DIR)

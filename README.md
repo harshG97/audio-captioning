@@ -243,7 +243,10 @@ per time step, giving 124 vectors per clip (about 17 GB for the paper
 split), and `POOL=1` keeps all 496. The checkpoint and pooling are recorded
 in `encoder.txt`, and neither preprocessing job writes into a folder made
 by the other. The job first prints the top AudioSet labels of a few val
-clips beside their captions, to show the weights loaded. The trained model
+clips beside their captions, to show the weights loaded. It stops if any
+clip that the CLAP features in `MATCH_FEAT_DIR` (default `features`) hold
+has no audio, since training skips clips without features and the two
+encoders would then be compared on different clips. The trained model
 still carries CLAP's encoder config, which only gives the feature width
 (768, as for BEATs): new audio must go through `extract_beats_features.py`.
 `data/audioset_labels.csv` is the AudioSet label list (Google, CC BY 4.0).
@@ -611,8 +614,10 @@ Three `metrics_test.json` files give you the comparison table:
   (summed log-prob; ignored for greedy), `--no_repeat_ngram_size 0`.
   `--num_beams 1` gives greedy decoding. Beam search with length penalty 0
   favors short captions (about 6 words, against about 10 in the
-  references): `--length_penalty` above 0 and `--min_new_tokens N` (no end of
-  caption before N tokens, about 1.3 tokens per word) lengthen them; pair a
+  references): `--length_penalty` above 0 and `--min_new_tokens N` lengthen them. The
+  minimum holds back every token the caption would end or be cut at (".",
+  the end token here, and tokens such as "..." or a newline) for N tokens,
+  about 1.3 tokens per word; pair a
   minimum with `--no_repeat_ngram_size 3` to avoid repetition.
 - **Scoring.** `score_predictions.py` PTB-tokenizes references and
   predictions (needs Java), as in the standard COCO/DCASE evaluation, and
