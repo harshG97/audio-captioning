@@ -18,7 +18,8 @@ SUBMIT = REPO_ROOT / "scripts" / "submit.sh"
 CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "K", "SEED", "DEDUP", "XATTN", "TRAIN_DECODER", "PROMPT_DROPOUT", "TAG",
            "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT", "KEEP", "PATIENCE",
-           "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM", "CHECKPOINT_EVERY"]
+           "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM", "CHECKPOINT_EVERY",
+           "BEATS_CKPT", "POOL", "DATA_DIR"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -137,3 +138,18 @@ def test_resume_from_needs_a_tag_and_a_checkpoint(tmp_path):
     assert no_tag.returncode != 0 and "RESUME_FROM" in no_tag.stderr
     s = settings(submit("run-a", tmp_path, RESUME_FROM=ckpt, TAG="from50", KEEP="last"))
     assert s["RUN_NAME"] == "a_paper_k4_last_from50_s42" and s["RESUME_FROM"] == str(ckpt)
+
+
+def test_beats_features_defaults(tmp_path):
+    got = settings(submit("beats-features", tmp_path, BEATS_CKPT=tmp_path / "b.pt"))
+    assert got["FEAT_DIR"] == str(tmp_path / "recap" / "features_beats")
+    assert got["DATA_DIR"] == "data/paper_split"
+    assert got["BEATS_CKPT"] == str(tmp_path / "b.pt")
+    got = settings(submit("beats-features", tmp_path, BEATS_CKPT="b.pt", POOL=1,
+                          FEAT_DIR=tmp_path / "fb"))
+    assert got["FEAT_DIR"] == str(tmp_path / "fb") and got["POOL"] == "1"
+
+
+def test_beats_features_needs_a_checkpoint_and_audio(tmp_path):
+    assert submit("beats-features", tmp_path).returncode != 0
+    assert submit("beats-features", tmp_path, BEATS_CKPT="b.pt", AUDIO_DIR="").returncode != 0

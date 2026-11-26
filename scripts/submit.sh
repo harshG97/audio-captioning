@@ -42,6 +42,12 @@
 # refuses to mix checkpoints in one FEAT_DIR, e.g. for the paper split only:
 #   CLAP=laion/clap-htsat-unfused FEAT_DIR=$HOME/scratch/recap/features_unfused \
 #   DATA_DIR=data/paper_split scripts/submit.sh preprocess
+# BEATs features for cross-attention (paper split, in features_beats; POOL=1
+# keeps all 496 vectors per clip instead of 124), then train with CLAP
+# retrieval caches from another folder:
+#   BEATS_CKPT=~/models/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt scripts/submit.sh beats-features
+#   FEAT_DIR=$HOME/scratch/recap/features_beats CACHE_DIR=$HOME/scratch/recap/features_unfused \
+#   TAG=beats scripts/submit.sh run-a
 #
 # LOCAL=1 runs the job right here instead of submitting it, for a single GPU
 # machine without Slurm (a cloud instance, say). Activate the conda env
@@ -67,6 +73,8 @@ jobs:
                 top-4 caches both as-is and over distinct captions (_dedup)
   paper-caches  top-4 caches with the paper split's train captions as the datastore
                 (reuses the preprocess features; run after preprocess)
+  beats-features  BEATs features (BEATS_CKPT=<.pt>) and empty caches for the paper split,
+                in features_beats; retrieval caches still come from CLAP
   g1            sanity gate 1: k=0, 1 epoch on the full train set, checked on val
   g2            sanity gate 2: k=4, 3 epochs on the full train set, checked on val
   run-a         paper-faithful: paper split, k=4, up to 100 epochs, early stopping
@@ -139,6 +147,10 @@ case $job in
     paper-caches)
         script=scripts/phoenix_preprocess.sbatch; time=01:00:00
         export REUSE_FROM=$FEAT_DIR FEAT_DIR=$PAPER_FEAT DATA_DIR=data/paper_split ;;
+    beats-features)
+        script=scripts/phoenix_beats.sbatch; time=02:00:00
+        : "${BEATS_CKPT:?set BEATS_CKPT to the BEATs .pt checkpoint}"
+        export FEAT_DIR=${ORIG_FEAT_DIR:-$SCRATCH_RECAP/features_beats} DATA_DIR=${DATA_DIR:-data/paper_split} ;;
     g1)
         script=scripts/phoenix_train.sbatch; time=03:00:00
         export RUN_NAME=${RUN_NAME:-g1_k${K:-0}${VARIANT}_s$SEED} K=${K:-0} EPOCHS=${EPOCHS:-1} \
@@ -210,14 +222,14 @@ if [ "$LOCAL" = 1 ]; then
     # Hugging Face cache in $HOME, and require the audio location explicitly.
     export SKIP_CONDA=1 PROJ=${PROJ:-$SCRATCH_RECAP}
     export HF_HOME=${HF_HOME:-$HOME/.cache/huggingface}
-    if [ "$script" = scripts/phoenix_preprocess.sbatch ] && [ -z "${REUSE_FROM:-}" ]; then
+    if { [ "$script" = scripts/phoenix_preprocess.sbatch ] && [ -z "${REUSE_FROM:-}" ]; } || [ "$script" = scripts/phoenix_beats.sbatch ]; then
         : "${AUDIO_DIR:?set AUDIO_DIR to the raw audio folder}"
     fi
     [ $# -eq 0 ] || echo "note: LOCAL=1 ignores the sbatch options: $*"
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -232,7 +244,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

@@ -44,8 +44,12 @@ PATIENCE=${PATIENCE:-0}       # early stopping patience in epochs; 0 = off
 SEED=${SEED:-42}
 SKIP_SPICE=${SKIP_SPICE:-1}
 # The CLAP checkpoint the features were made with (recorded by preprocessing);
-# the encoder weights are not used in training, which reads FEAT_DIR.
+# the encoder weights are not used in training, which reads FEAT_DIR. BEATs
+# features (FEAT_DIR/encoder.txt, scripts/phoenix_beats.sbatch) are also
+# 768 wide, so the default CLAP config serves for their width.
 ENCODER_NAME=${ENCODER_NAME:-$(cat "$FEAT_DIR/clap.txt" 2>/dev/null || echo laion/clap-htsat-fused)}
+FEATURES=$ENCODER_NAME
+[ -f "$FEAT_DIR/encoder.txt" ] && FEATURES=$(cat "$FEAT_DIR/encoder.txt")
 DECODER_NAME=${DECODER_NAME:-gpt2}
 XATTN=${XATTN:-7}             # cross-attention size in millions: 28 14 7 3.5 1.75
 TRAIN_DECODER=${TRAIN_DECODER:-0}   # 1 = fine-tune all of GPT-2 too
@@ -119,7 +123,7 @@ cache_label=top${CACHE_K}${CACHE_VARIANT}
 [ "$K" -eq 0 ] && cache_label=empty
 echo "encoder=$ENCODER_NAME decoder=$DECODER_NAME xattn=${XATTN}M train_decoder=$TRAIN_DECODER keep=$KEEP snapshot_every=$SNAPSHOT_EVERY checkpoint_every=$CHECKPOINT_EVERY"
 echo "K=$K cache=$cache_label epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
-echo "train csv: $DATA_DIR/train.csv  features: $FEAT_DIR  caches: $CACHE_DIR"
+echo "train csv: $DATA_DIR/train.csv  features: $FEAT_DIR ($FEATURES)  caches: $CACHE_DIR"
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| cuda', torch.cuda.is_available())"
 if [ "${ALLOW_CPU:-0}" != 1 ]; then
     python -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 'CUDA not available: compare the nvidia-smi CUDA version with the torch build')"

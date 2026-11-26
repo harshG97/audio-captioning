@@ -59,6 +59,10 @@ clap_of() {
     elif [ -n "$(ls -A "$1/.done" 2>/dev/null)" ]; then echo laion/clap-htsat-fused
     fi
 }
+if [ -f "$FEAT_DIR/encoder.txt" ]; then
+    echo "$FEAT_DIR holds other features ($(cat "$FEAT_DIR/encoder.txt")); use another FEAT_DIR" >&2
+    exit 1
+fi
 existing=$(clap_of "$FEAT_DIR")
 if [ -n "$existing" ] && [ "$existing" != "$CLAP" ]; then
     echo "$FEAT_DIR was built with CLAP=$existing, not $CLAP; use another FEAT_DIR" >&2

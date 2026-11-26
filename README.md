@@ -219,6 +219,35 @@ DECODER_NAME=gpt2-medium TAG=medium scripts/submit.sh run-a     # a_paper_k4_med
 factor (7 = 4), so on GPT-2 medium `XATTN=7` is about 25M parameters plus
 0.8M for the projection. The run log prints the actual trainable count.
 
+**BEATs features.** [BEATs](https://arxiv.org/abs/2212.09058) (Microsoft,
+trained on AudioSet) can replace CLAP as the features the decoder attends
+to; retrieval stays on CLAP, since it needs CLAP's shared audio-text space.
+Its code is vendored in `model/beats/` (MIT, from `microsoft/unilm`, with
+torchaudio's filterbank so no torchaudio install is needed). Checkpoints are
+plain `.pt` files outside Hugging Face; the one captioning systems usually
+use is `BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt`, linked from the
+[BEATs README](https://github.com/microsoft/unilm/tree/master/beats).
+
+```bash
+BEATS_CKPT=~/models/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt scripts/submit.sh beats-features
+B=$HOME/scratch/recap/features_beats U=$HOME/scratch/recap/features_unfused
+K=3 XATTN=28 FEAT_DIR=$B CACHE_DIR=$U TAG=beats-official scripts/submit.sh run-a
+XATTN=28 FEAT_DIR=$B TAG=beats scripts/submit.sh run-c
+```
+
+`beats-features` writes the paper split's features to `features_beats`,
+with the empty caches run-c needs. Clips are loaded at 16 kHz and made 10 s
+long (cut, or repeated if shorter). BEATs gives 62 time steps x 8 frequency
+bands of 768-wide vectors; `POOL=4` (default) averages 4 neighbouring bands
+per time step, giving 124 vectors per clip (about 17 GB for the paper
+split), and `POOL=1` keeps all 496. The checkpoint and pooling are recorded
+in `encoder.txt`, and neither preprocessing job writes into a folder made
+by the other. The job first prints the top AudioSet labels of a few val
+clips beside their captions, to show the weights loaded. The trained model
+still carries CLAP's encoder config, which only gives the feature width
+(768, as for BEATs): new audio must go through `extract_beats_features.py`.
+`data/audioset_labels.csv` is the AudioSet label list (Google, CC BY 4.0).
+
 ### Running on a single GPU machine (no Slurm)
 
 On a machine without Slurm, such as a cloud GPU instance, `LOCAL=1` runs the
