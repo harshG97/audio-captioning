@@ -332,3 +332,34 @@ def test_train_py_rejects_cross_attention_options(monkeypatch, llm_dir, data_fil
     for bad in (["--attention_size", "28"], ["--train_decoder"]):
         with pytest.raises(SystemExit):
             _train(monkeypatch, llm_dir, data_files, tmp_path / "x", 1, *bad)
+
+
+def test_decoding_ignores_the_llms_own_sampling_settings(prefix, data_files):
+    """Llama 3.2's generation_config samples; decoding must stay greedy/beam."""
+    model, tok = prefix
+    model.eval()
+    csv, h5, cache = data_files
+    with h5py.File(h5, "r") as f:
+        feats = torch.from_numpy(f["abc_0"][()]).unsqueeze(0)
+    start = torch.tensor([[tok.eos_token_id, 5, 6]])
+    gc = model.llm.get_base_model().generation_config
+    gc.do_sample, gc.temperature, gc.top_k, gc.repetition_penalty = True, 5.0, 0, 3.0
+    runs = [model.generate(feats, start, max_new_tokens=6, num_beams=1, eos_token_id=tok.eos_token_id,
+                           pad_token_id=tok.pad_token_id)[0].tolist() for _ in range(3)]
+    assert runs[0] == runs[1] == runs[2] == _greedy_by_hand(model, feats, start, len(runs[0]))
+
+
+def test_checkpoints_pin_the_llm_revision(prefix, tmp_path, monkeypatch):
+    model, tok = prefix
+    model.config.llm_revision = "abc123"
+    model.save_pretrained(tmp_path / "ck")
+    import model.prefix_lm as pl
+    seen = {}
+    original = pl.AutoModelForCausalLM.from_pretrained
+    def spy(name, **kw):
+        seen.update(kw)
+        kw.pop("revision")
+        return original(name, **kw)
+    monkeypatch.setattr(pl.AutoModelForCausalLM, "from_pretrained", spy)
+    AudioPrefixLM.from_pretrained(str(tmp_path / "ck"))
+    assert seen["revision"] == "abc123"

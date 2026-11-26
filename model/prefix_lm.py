@@ -31,7 +31,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.module import _IncompatibleKeys
-from transformers import AutoModelForCausalLM, AutoTokenizer, PretrainedConfig, PreTrainedModel
+from transformers import (AutoModelForCausalLM, AutoTokenizer, GenerationConfig, PretrainedConfig,
+                          PreTrainedModel)
 from transformers.modeling_outputs import CausalLMOutput
 
 LORA_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
@@ -42,9 +43,13 @@ class AudioPrefixConfig(PretrainedConfig):
 
     def __init__(self, llm_name: str = "Qwen/Qwen2.5-1.5B", feature_width: int = 768,
                  audio_pool: int = 4, lora_r: int = 16, lora_alpha: int = 32,
-                 lora_dropout: float = 0.05, lora_targets=LORA_TARGETS, **kwargs):
+                 lora_dropout: float = 0.05, lora_targets=LORA_TARGETS,
+                 llm_revision: Optional[str] = None, **kwargs):
         super().__init__(**kwargs)
         self.llm_name = llm_name
+        # Hub commit the LLM was trained from, so a checkpoint's adapters are
+        # never loaded onto updated base weights (None for a local folder).
+        self.llm_revision = llm_revision
         self.feature_width = feature_width
         self.audio_pool = audio_pool
         self.lora_r = lora_r
@@ -81,7 +86,7 @@ class AudioPrefixLM(PreTrainedModel):
         from peft import LoraConfig, get_peft_model   # only this model needs peft
 
         base = llm if llm is not None else AutoModelForCausalLM.from_pretrained(
-            config.llm_name, torch_dtype=torch.float32)
+            config.llm_name, revision=config.llm_revision, torch_dtype=torch.float32)
         for p in base.parameters():
             p.requires_grad_(False)
         lora = LoraConfig(r=config.lora_r, lora_alpha=config.lora_alpha,
@@ -126,9 +131,12 @@ class AudioPrefixLM(PreTrainedModel):
     @torch.no_grad()
     def generate(self, encoder_hidden_states: torch.Tensor, input_ids: torch.Tensor, **kwargs):
         """New tokens only: the LLM gets embeddings, not ids, so its output
-        holds no prompt tokens."""
+        holds no prompt tokens. Decoding follows only the given arguments: the
+        LLM's own generation_config.json may sample or add penalties (Llama
+        3.2's samples at temperature 0.6), so it is replaced by a neutral one."""
         embeds, mask, _ = self.build_inputs(encoder_hidden_states, input_ids)
-        return self.llm.generate(inputs_embeds=embeds, attention_mask=mask, **kwargs)
+        return self.llm.generate(inputs_embeds=embeds, attention_mask=mask,
+                                 generation_config=GenerationConfig(), **kwargs)
 
     # ---- checkpoints: trained weights only ----------------------------------
 
@@ -181,10 +189,12 @@ def build_prefix_lm(llm_name: str, feature_width: int, audio_pool: int = 4, lora
                                decoder_start_token_id=tokenizer.eos_token_id,
                                eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id)
     model = AudioPrefixLM(config)
+    model.config.llm_revision = getattr(model.llm.get_base_model().config, "_commit_hash", None)
     trained = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
     print(f"[prefix_lm] {llm_name}: trainable {trained:,} / {total:,} parameters "
-          f"(projector + LoRA r={lora_r}); {audio_pool}x pooled audio")
+          f"(projector + LoRA r={lora_r}); {audio_pool}x pooled audio; "
+          f"revision {model.config.llm_revision or 'local'}")
     return model, tokenizer
 
 
