@@ -19,7 +19,8 @@ CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "K", "SEED", "DEDUP", "XATTN", "TRAIN_DECODER", "PROMPT_DROPOUT", "TAG",
            "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT", "KEEP", "PATIENCE",
            "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM", "CHECKPOINT_EVERY",
-           "BEATS_CKPT", "POOL", "DATA_DIR", "MATCH_FEAT_DIR"]
+           "BEATS_CKPT", "POOL", "DATA_DIR", "MATCH_FEAT_DIR",
+           "TRAIN_DIR", "EMB_DIR", "DATASTORE_DIR", "CAP", "DROP_PCT"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -154,3 +155,37 @@ def test_beats_features_defaults(tmp_path):
 def test_beats_features_needs_a_checkpoint_and_audio(tmp_path):
     assert submit("beats-features", tmp_path).returncode != 0
     assert submit("beats-features", tmp_path, BEATS_CKPT="b.pt", AUDIO_DIR="").returncode != 0
+
+
+def _train_dir(tmp_path, val_text=None):
+    d = tmp_path / "expanded"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "train.csv").write_text("youtube_id,start_time,caption\n")
+    for split in ("val", "test"):
+        text = (REPO_ROOT / "data" / "paper_split" / f"{split}.csv").read_text()
+        (d / f"{split}.csv").write_text(val_text if (val_text and split == "val") else text)
+    return d
+
+
+@pytest.mark.parametrize("job", ["run-a", "run-c"])
+def test_train_dir_replaces_only_the_training_data(tmp_path, job):
+    d = _train_dir(tmp_path)
+    got = settings(submit(job, tmp_path, TRAIN_DIR=d, TAG="plus"))
+    assert got["DATA_DIR"] == str(d)
+    assert "data/paper_split/test.csv" in got["EVAL_SETS"] and got["RUN_NAME"].endswith("_plus_s42")
+    assert submit(job, tmp_path, TRAIN_DIR=d).returncode != 0          # needs a TAG
+
+
+def test_train_dir_must_keep_the_paper_val_and_test(tmp_path):
+    d = _train_dir(tmp_path, val_text="youtube_id,start_time,caption\nx,0,other.\n")
+    result = submit("run-a", tmp_path, TRAIN_DIR=d, TAG="plus")
+    assert result.returncode != 0 and "differs" in result.stderr
+    assert submit("g2", tmp_path, TRAIN_DIR=_train_dir(tmp_path / "ok"), TAG="x").returncode != 0
+
+
+def test_expand_data_defaults(tmp_path):
+    got = settings(submit("expand-data", tmp_path))
+    assert got["EMB_DIR"] == str(tmp_path / "recap" / "features")
+    assert got["DATASTORE_DIR"] == str(tmp_path / "recap" / "features_unfused")
+    assert got["CACHE_DIR"] == str(tmp_path / "recap" / "features_unfused_plus")
+    assert submit("expand-data", tmp_path, AUDIO_DIR="").returncode != 0

@@ -65,6 +65,7 @@ ORIG_CACHE_DIR=${CACHE_DIR:-}
 ORIG_ENCODER_NAME=${ENCODER_NAME:-}
 ORIG_DECODER_NAME=${DECODER_NAME:-}
 ORIG_PATIENCE=${PATIENCE:-}
+TRAIN_DIR=${TRAIN_DIR:-}
 
 usage() {
     cat <<'EOF'
@@ -75,6 +76,9 @@ jobs:
                 (reuses the preprocess features; run after preprocess)
   beats-features  BEATs features (BEATS_CKPT=<.pt>) and empty caches for the paper split,
                 in features_beats; retrieval caches still come from CLAP
+  expand-data   paper train + the other AudioCaps 2.0 train clips (data/expanded/cap3 and
+                cap3_agree10) and their retrieval caches (features_unfused_plus); train on
+                them with TRAIN_DIR=data/expanded/<name> (run after preprocess)
   g1            sanity gate 1: k=0, 1 epoch on the full train set, checked on val
   g2            sanity gate 2: k=4, 3 epochs on the full train set, checked on val
   run-a         paper-faithful: paper split, k=4, up to 100 epochs, early stopping
@@ -163,7 +167,7 @@ case $job in
     run-a)
         script=scripts/phoenix_train.sbatch; time=24:00:00
         export RUN_NAME=${RUN_NAME:-a_paper_k${K:-4}${DEDUP_SUFFIX}${VARIANT}_s$SEED} K=${K:-4} EPOCHS=${EPOCHS:-100} \
-               PATIENCE=${PATIENCE:-5} DATA_DIR=data/paper_split CACHE_DIR=${CACHE_DIR:-$PAPER_FEAT} \
+               PATIENCE=${PATIENCE:-5} DATA_DIR=${TRAIN_DIR:-data/paper_split} CACHE_DIR=${CACHE_DIR:-$PAPER_FEAT} \
                SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/paper_split/val.csv:val test:data/paper_split/test.csv:test" ;;
     run-b)
@@ -174,8 +178,12 @@ case $job in
     run-c)
         script=scripts/phoenix_train.sbatch; time=24:00:00
         export RUN_NAME=${RUN_NAME:-c_paper_k${K:-0}${VARIANT}_s$SEED} K=${K:-0} EPOCHS=${EPOCHS:-100} \
-               PATIENCE=${PATIENCE:-5} DATA_DIR=data/paper_split SKIP_SPICE=${SKIP_SPICE:-0} \
+               PATIENCE=${PATIENCE:-5} DATA_DIR=${TRAIN_DIR:-data/paper_split} SKIP_SPICE=${SKIP_SPICE:-0} \
                EVAL_SETS="val:data/paper_split/val.csv:val test:data/paper_split/test.csv:test" ;;
+    expand-data)
+        script=scripts/phoenix_expand.sbatch; time=02:00:00
+        export EMB_DIR=${EMB_DIR:-$SCRATCH_RECAP/features} DATASTORE_DIR=${DATASTORE_DIR:-$SCRATCH_RECAP/features_unfused} \
+               CACHE_DIR=${ORIG_CACHE_DIR:-$SCRATCH_RECAP/features_unfused_plus} ;;
     *)
         echo "unknown job: $job" >&2; usage >&2; exit 1 ;;
 esac
@@ -198,6 +206,20 @@ if [ "${KEEP:-best}" = last ] && [ "$script" = scripts/phoenix_train.sbatch ]; t
     export PATIENCE=0
 fi
 
+# Other training data (TRAIN_DIR) is only for run-a and run-c, and must keep
+# the paper split's val and test, so selection and scores stay comparable.
+if [ -n "$TRAIN_DIR" ]; then
+    if [ "$job" != run-a ] && [ "$job" != run-c ]; then
+        echo "TRAIN_DIR is for run-a and run-c only" >&2; exit 1
+    fi
+    for split in val test; do
+        if ! cmp -s "$TRAIN_DIR/$split.csv" "data/paper_split/$split.csv"; then
+            echo "$TRAIN_DIR/$split.csv differs from data/paper_split/$split.csv" >&2; exit 1
+        fi
+    done
+    [ -f "$TRAIN_DIR/train.csv" ] || { echo "no $TRAIN_DIR/train.csv" >&2; exit 1; }
+fi
+
 # A training job pointed at other features, caches or models must say so in
 # its run name; otherwise it would reuse (and skip) an existing run's steps.
 if [ "$script" = scripts/phoenix_train.sbatch ] && [ -z "${TAG:-}" ]; then
@@ -209,6 +231,7 @@ if [ "$script" = scripts/phoenix_train.sbatch ] && [ -z "${TAG:-}" ]; then
     [ -n "$ORIG_ENCODER_NAME" ] && [ "$ORIG_ENCODER_NAME" != laion/clap-htsat-fused ] && overridden+=(ENCODER_NAME)
     [ -n "$ORIG_DECODER_NAME" ] && [ "$ORIG_DECODER_NAME" != gpt2 ] && overridden+=(DECODER_NAME)
     [ -n "${RESUME_FROM:-}" ] && overridden+=(RESUME_FROM)
+    [ -n "$TRAIN_DIR" ] && overridden+=(TRAIN_DIR)
     if [ ${#overridden[@]} -gt 0 ]; then
         echo "${overridden[*]} set: also set TAG=<name> so this variant gets its own run folder" >&2
         exit 1
@@ -223,14 +246,15 @@ if [ "$LOCAL" = 1 ]; then
     # Hugging Face cache in $HOME, and require the audio location explicitly.
     export SKIP_CONDA=1 PROJ=${PROJ:-$SCRATCH_RECAP}
     export HF_HOME=${HF_HOME:-$HOME/.cache/huggingface}
-    if { [ "$script" = scripts/phoenix_preprocess.sbatch ] && [ -z "${REUSE_FROM:-}" ]; } || [ "$script" = scripts/phoenix_beats.sbatch ]; then
+    if { [ "$script" = scripts/phoenix_preprocess.sbatch ] && [ -z "${REUSE_FROM:-}" ]; } \
+       || [ "$script" = scripts/phoenix_beats.sbatch ] || [ "$script" = scripts/phoenix_expand.sbatch ]; then
         : "${AUDIO_DIR:?set AUDIO_DIR to the raw audio folder}"
     fi
     [ $# -eq 0 ] || echo "note: LOCAL=1 ignores the sbatch options: $*"
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -245,7 +269,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

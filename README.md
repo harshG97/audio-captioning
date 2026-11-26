@@ -251,6 +251,36 @@ still carries CLAP's encoder config, which only gives the feature width
 (768, as for BEATs): new audio must go through `extract_beats_features.py`.
 `data/audioset_labels.csv` is the AudioSet label list (Google, CC BY 4.0).
 
+**More training data.** The paper split trains on 42,797 of AudioCaps 2.0's
+91,254 train clips. `scripts/submit.sh expand-data` (after `preprocess`)
+adds the other 48,457, filtered by `data/build_expanded_split.py`:
+
+- `data/expanded/cap3`: paper train plus the extra clips, each caption kept
+  at most 3 times counting the paper copies (the extra captions repeat
+  stock phrasings, e.g. one caption 355 times), and only clips with audio.
+- `data/expanded/cap3_agree10`: the same, minus the 10% of extra clips whose
+  caption fits their audio worst (CLAP audio-text cosine similarity, from
+  the `features` embeddings).
+
+Extra captions are written in the paper split's style (lowercase, ending
+with "."). Val and test are the paper split's, unchanged; paper train rows
+are kept as they are. The job also writes retrieval caches for the extra
+clips to `features_unfused_plus`, from the same datastore as the paper runs
+(paper train captions, unfused CLAP), keeping the paper clips' entries
+unchanged. Train with `TRAIN_DIR`, which only run-a and run-c take, needs a
+`TAG`, and must keep the paper split's val and test:
+
+```bash
+scripts/submit.sh expand-data
+DATA_DIR=data/expanded/cap3 FEAT_DIR=$HOME/scratch/recap/features_beats_plus \
+  BEATS_CKPT=... scripts/submit.sh beats-features
+TRAIN_DIR=data/expanded/cap3 K=3 DECODER_NAME=gpt2-medium FEAT_DIR=$HOME/scratch/recap/features_beats_plus \
+  CACHE_DIR=$HOME/scratch/recap/features_unfused_plus TAG=beats-medium-cap3 scripts/submit.sh run-a
+```
+
+The summary's `train_copy_rate` then counts copies of the expanded training
+captions, so it is not directly comparable with paper-split runs.
+
 ### Running on a single GPU machine (no Slurm)
 
 On a machine without Slurm, such as a cloud GPU instance, `LOCAL=1` runs the
