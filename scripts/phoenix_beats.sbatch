@@ -42,6 +42,14 @@ if [ "${SKIP_CONDA:-0}" != 1 ]; then
     conda activate "$CONDA_ENV"
 fi
 cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+# torch compiles some GPU kernels on first use (Triton) and caches them, by
+# default under ~/.triton, which every node shares. Two jobs compiling the
+# same kernel at once then overwrite each other's files ("Stale file
+# handle"). Under Slurm each job gets its own cache on the node's local disk.
+if [ -n "${SLURM_JOB_ID:-}" ] && [ -z "${TRITON_CACHE_DIR:-}" ]; then
+    export TRITON_CACHE_DIR=${TMPDIR:-/tmp}/triton-cache-$SLURM_JOB_ID
+    mkdir -p "$TRITON_CACHE_DIR"
+fi
 [ -f "$BEATS_CKPT" ] || { echo "BEATS_CKPT=$BEATS_CKPT not found" >&2; exit 1; }
 mkdir -p "$FEAT_DIR/.done"
 
