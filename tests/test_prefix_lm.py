@@ -498,6 +498,14 @@ def test_train_py_warmup_freezes_lora_then_trains_it(monkeypatch, llm_dir, data_
     assert any(b.any() for b in lora_b(8))
     proj = lambda step: _trained(out / f"checkpoint-{step}")["projector.mlp.0.weight"]
     assert not torch.equal(proj(2), proj(4))                    # the projector trains meanwhile
+    # Adam's state for LoRA starts afresh when the hold ends (step 4); the
+    # projector's runs on. The count is per weight, in optimizer.pt.
+    def adam_steps(step):
+        opt = torch.load(out / f"checkpoint-{step}" / "optimizer.pt", weights_only=True)
+        return {g["part"]: {int(opt["state"][i]["step"]) for i in g["params"]} for g in opt["param_groups"]}
+    assert adam_steps(4) == {"projector": {4}, "lora": {4}}
+    assert adam_steps(6) == {"projector": {6}, "lora": {2}}
+    assert adam_steps(8) == {"projector": {8}, "lora": {4}}
 
 
 def test_train_py_resumes_exactly_across_the_warmup(monkeypatch, llm_dir, data_files, tmp_path, capsys):

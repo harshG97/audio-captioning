@@ -146,6 +146,14 @@ fi
 
 echo "host: $(hostname)  job: ${SLURM_JOB_ID:-local}  start: $(date)"
 echo "run: $RUN_DIR"
+# Which code this job runs. A job reads train.py and the other scripts when
+# it starts, not when it was submitted, so a `git pull` while it waited in
+# the queue changes what it runs.
+code=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+echo "code: $code"
+if [ -n "${RECAP_COMMIT:-}" ] && [ "$code" != "$RECAP_COMMIT" ]; then
+    echo "WARNING: the code changed since this job was submitted ($RECAP_COMMIT then, $code now)"
+fi
 cache_label=top${CACHE_K}${CACHE_VARIANT}
 [ "$K" -eq 0 ] && cache_label=empty
 if [ "$ARCH" = prefix ]; then

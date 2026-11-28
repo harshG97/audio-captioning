@@ -300,6 +300,29 @@ def linear_schedule(step: int, start: int, ramp: int, total: int) -> float:
     return max(0.0, (total - step) / max(1, total - start - ramp))
 
 
+class FreshLoraState(TrainerCallback):
+    """When LoRA's warm-up hold ends, drop the optimizer's state for the LoRA
+    weights, so their training starts as it would in a run without a hold.
+
+    During the hold the learning rate is 0 but Adam still counts steps and
+    averages gradients. LoRA's A matrices get zero gradients all that time
+    (B is still zero), so afterwards Adam would divide by a near-zero average
+    and move them several times faster than the learning rate says. The step
+    is a function of global_step alone, so a resumed run repeats it exactly."""
+
+    def __init__(self, trainer):
+        self.trainer = trainer
+
+    def on_step_begin(self, args, state, control, optimizer=None, **kwargs):
+        if optimizer is None or state.global_step != self.trainer.lora_hold_steps:
+            return
+        optimizer = getattr(optimizer, "optimizer", optimizer)      # unwrap accelerate's wrapper
+        for group in optimizer.param_groups:
+            if group.get("part") == "lora":
+                for p in group["params"]:
+                    optimizer.state.pop(p, None)
+
+
 class RecapTrainer(Trainer):
     """Trainer that starts the evaluation dataloader's workers once and keeps
     dataloader worker seeding out of the global RNG.
@@ -322,6 +345,9 @@ class RecapTrainer(Trainer):
         super().__init__(*args, **kwargs)
         self.projector_lr = projector_lr
         self.lora_warmup_epochs = lora_warmup_epochs
+        self.lora_hold_steps = None          # set by create_scheduler
+        if lora_warmup_epochs > 0:
+            self.add_callback(FreshLoraState(self))
 
     def _split_rates(self) -> bool:
         return self.projector_lr is not None or self.lora_warmup_epochs > 0
@@ -351,6 +377,7 @@ class RecapTrainer(Trainer):
         optimizer = self.optimizer if optimizer is None else optimizer
         ramp = self.args.get_warmup_steps(num_training_steps)
         hold = round(self.lora_warmup_epochs * num_training_steps / self.args.num_train_epochs)
+        self.lora_hold_steps = hold
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, [
             functools.partial(linear_schedule, start=hold if g["part"] == "lora" else 0,
                               ramp=ramp, total=num_training_steps)

@@ -287,6 +287,9 @@ fi
 mkdir -p logs
 echo "job: $job  script: $script  ${RUN_NAME:+run: $RUNS_DIR/$RUN_NAME}"
 
+# The commit at submission; the training job warns if the code has changed
+# by the time it starts (it reads the scripts then, not now).
+export RECAP_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 if [ "$LOCAL" = 1 ]; then
     # No module system or cluster paths here: use the active env, keep the
     # Hugging Face cache in $HOME, and require the audio location explicitly.
