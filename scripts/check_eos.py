@@ -35,6 +35,7 @@ if _REPO_ROOT not in sys.path:
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
 from model.build_recap import _register_auto_classes_once, build_recap
+from retrieval.prompt_builder import refuse_prompt_extras
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +61,7 @@ def _load_model_and_tokenizer(args):
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         model = AutoModel.from_pretrained(args.checkpoint)
+        refuse_prompt_extras(model.config, "check_eos.py")
         return model, tokenizer
     return build_recap(
         encoder_name=args.encoder_name,

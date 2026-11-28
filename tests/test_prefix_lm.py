@@ -678,6 +678,25 @@ def test_labels_and_zero_audio_carry_from_training_to_evaluation(monkeypatch, ll
     assert all(kw["encoder_hidden"].any() for kw in seen)
 
 
+def test_other_scripts_refuse_label_and_no_audio_checkpoints(monkeypatch, llm_dir, data_files, tmp_path):
+    from types import SimpleNamespace
+    from retrieval.prompt_builder import refuse_prompt_extras
+    refuse_prompt_extras(SimpleNamespace(), "x.py")                              # a plain checkpoint passes
+    for config in (SimpleNamespace(sound_labels=3), SimpleNamespace(zero_audio=True)):
+        with pytest.raises(SystemExit, match="does not support"):
+            refuse_prompt_extras(config, "x.py")
+    # The audio ablation has nothing to measure on a model trained without audio.
+    out = tmp_path / "noaudio"
+    _train(monkeypatch, llm_dir, data_files, out, 1, "--zero_audio")
+    csv, h5, cache = data_files
+    monkeypatch.setattr(sys, "argv", ["ablate_audio.py", "--checkpoint", str(out), "--csv_path", csv,
+                                      "--hdf5_path", h5, "--retrieval_cache", cache, "--device", "cpu"])
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import ablate_audio
+    with pytest.raises(SystemExit, match="no-audio control"):
+        ablate_audio.main()
+
+
 def test_train_py_checks_the_label_options(monkeypatch, llm_dir, data_files, tmp_path):
     import train
     labels = _labels_file(tmp_path)
@@ -737,6 +756,7 @@ def test_train_py_with_several_layers(monkeypatch, llm_dir, data_files, tmp_path
     assert "layer mix learning rate 0.001" in printed
     model = load_captioner(str(out))
     assert model.projector.n_layers == 2
+    assert torch.equal(model.projector.layer_weights.detach().cpu(), saved["projector.layer_weights"])   # restored
     preds, seen = _evaluate(monkeypatch, out, files, tmp_path / "p.json")
     assert len(preds) == 2 and seen[0]["encoder_hidden"].shape == (1, ENC_LEN, 2 * FEAT)
     # The features must split into the stated number of layers, and match the model.

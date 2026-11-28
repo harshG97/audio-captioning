@@ -266,3 +266,8 @@ def test_labels_settings_are_checked_and_passed_on(tmp_path):
     got = settings(submit("beats-features", tmp_path, BEATS_CKPT="b.pt", LAYERS="4,8,12",
                           FEAT_DIR=tmp_path / "fl"))
     assert got["LAYERS"] == "4,8,12" and got["FEAT_DIR"] == str(tmp_path / "fl")
+    # LAYERS is for the features job; a training job would silently ignore it.
+    result = submit("run-c", tmp_path, ARCH="prefix", LAYERS="4,8,12")
+    assert result.returncode != 0 and "only applies to beats-features" in result.stderr
+    result = submit("beats-features", tmp_path, BEATS_CKPT="b.pt", LAYERS="4-12", FEAT_DIR=tmp_path / "fl")
+    assert result.returncode != 0 and "LAYERS must be" in result.stderr

@@ -21,6 +21,7 @@ from transformers import Trainer, TrainingArguments
 
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
+from retrieval.prompt_builder import refuse_prompt_extras
 from model.build_recap import (
     apply_freeze_policy,
     build_param_groups,
@@ -123,6 +124,7 @@ def main() -> None:
 
     print(f"[finetune] loading checkpoint: {args.pretrained_checkpoint}")
     model, tokenizer = load_recap_checkpoint(args.pretrained_checkpoint)
+    refuse_prompt_extras(model.config, "finetune.py")
     wire_special_tokens(model, tokenizer)
     apply_freeze_policy(model, freeze_encoder=True, train_decoder=True)
 

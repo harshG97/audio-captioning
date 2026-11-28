@@ -294,7 +294,8 @@ exactly. Checkpoints made before these options load unchanged.
 also carries its AudioSet classifier (527 sound classes).
 `data/build_sound_labels.py` applies it to the stored BEATs features (no
 audio or GPU needed, a few minutes) and writes each clip's 10 most likely
-labels to `labels_<split>.json` in the features folder. With `LABELS=5` the
+labels to `labels_<split>.json` in the features folder (so `LABELS` above 10
+has no effect unless the file is rebuilt with a larger `--top`). With `LABELS=5` the
 prompt gains a line before "This audio sounds like", listing up to 5 labels
 with probability 0.1 or more (always at least the top one):
 
@@ -312,12 +313,14 @@ ARCH=prefix LABELS=5 ZERO_AUDIO=1 FEAT_DIR=$B TAG=beats scripts/submit.sh run-c 
 ```
 
 It works with either model and with retrieval (the labels line then follows
-the retrieved captions, so trimming a long prompt never drops it). Runs get
+the retrieved captions, so a prompt that is too long loses retrieved
+captions first). Runs get
 `_lab5`. The count and threshold are stored in the checkpoint, and
 `evaluate.py` and `scripts/ablate_audio.py` then require `--labels_path`.
 `ZERO_AUDIO=1` (`_noaudio`) is a control that replaces the audio features
 with zeros in training and evaluation: with `LABELS` it shows how far the
-labels alone go, which is the number a labels-and-audio run has to beat.
+labels alone go, which is the number a labels-and-audio run has to beat
+(such a run skips the audio ablation, which has nothing to measure).
 The classifier was trained on AudioSet, which AudioCaps is drawn from, so
 its labels may be more accurate on clips it saw in training than on new
 audio.

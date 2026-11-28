@@ -144,6 +144,15 @@ def checkpoint_sound_labels(config) -> tuple[int, float]:
     return int(getattr(config, "sound_labels", 0) or 0), float(getattr(config, "sound_label_min_prob", 0.1))
 
 
+def refuse_prompt_extras(config, script: str) -> None:
+    """For scripts that build plain prompts: stop on a checkpoint trained with
+    sound labels in the prompt or without audio, whose inputs they would not
+    rebuild the way it was trained."""
+    if checkpoint_sound_labels(config)[0] > 0 or getattr(config, "zero_audio", False):
+        raise SystemExit(f"{script} does not support checkpoints trained with sound labels "
+                         "(--sound_labels) or without audio (--zero_audio)")
+
+
 def checkpoint_retrieval_k(config) -> Optional[int]:
     """The k a checkpoint was trained with, or None for no-retrieval or
     checkpoints that predate the setting (they then use the whole cache entry,

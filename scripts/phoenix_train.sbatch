@@ -306,9 +306,13 @@ done
 IFS=: read -r name csv split <<< "${EVAL_SETS%% *}"
 LABEL_ABLATE=""
 [ "$LABELS" != 0 ] && LABEL_ABLATE="--labels_path '$(labels_file "$split")'"
-step ablate bash -c "set -o pipefail; python scripts/ablate_audio.py --checkpoint '$RUN_DIR' --csv_path '$csv' \
-    --hdf5_path '$FEAT_DIR/audiocaps_$split.hdf5' --retrieval_cache '$(cache "$split")' $LABEL_ABLATE \
-    --batch_size '$BATCH' --num_workers '$WORKERS' | tee '$RUN_DIR/ablate_$name.txt'"
+if [ "$ZERO_AUDIO" = 1 ]; then
+    echo "=== skip ablate (no-audio control: the model never saw audio)"
+else
+    step ablate bash -c "set -o pipefail; python scripts/ablate_audio.py --checkpoint '$RUN_DIR' --csv_path '$csv' \
+        --hdf5_path '$FEAT_DIR/audiocaps_$split.hdf5' --retrieval_cache '$(cache "$split")' $LABEL_ABLATE \
+        --batch_size '$BATCH' --num_workers '$WORKERS' | tee '$RUN_DIR/ablate_$name.txt'"
+fi
 
 # 4. Copy baseline: output the top retrieved caption for every clip
 if [ "$K" -gt 0 ]; then

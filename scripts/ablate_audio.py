@@ -89,6 +89,9 @@ def main() -> None:
     model = load_captioner(args.checkpoint).to(device)   # RECAP or the prefix model
     model.eval()
 
+    if getattr(model.config, "zero_audio", False):
+        raise SystemExit(f"{args.checkpoint} is a no-audio control (trained with the audio "
+                         "replaced by zeros): there is no audio use to measure")
     labels_k, labels_min_prob = checkpoint_sound_labels(model.config)
     if (labels_k > 0) != bool(args.labels_path):
         raise SystemExit("--labels_path is needed for, and only for, a checkpoint trained with sound labels")

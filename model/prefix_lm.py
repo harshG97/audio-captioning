@@ -111,7 +111,7 @@ class AudioProjector(nn.Module):
             raise ValueError(f"features are {feats.shape[-1]} wide; expected {self.n_layers} layer(s) "
                              f"of {self.feature_width}")
         if self.n_layers > 1:
-            layers = feats.view(*feats.shape[:2], self.n_layers, self.feature_width)
+            layers = feats.reshape(*feats.shape[:2], self.n_layers, self.feature_width)
             layers = F.layer_norm(layers, (self.feature_width,))
             feats = (layers * self.layer_mix().to(layers.dtype).view(1, 1, -1, 1)).sum(dim=2)
         b, t, d = feats.shape

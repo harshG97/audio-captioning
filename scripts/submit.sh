@@ -246,6 +246,11 @@ case $job in
     *)
         echo "unknown job: $job" >&2; usage >&2; exit 1 ;;
 esac
+if [ -n "${LAYERS:-}" ]; then
+    # A training job takes its layers from the features folder (encoder.txt).
+    [ "$job" = beats-features ] || { echo "LAYERS only applies to beats-features; a training job reads the layers from FEAT_DIR" >&2; exit 1; }
+    [[ $LAYERS =~ ^[0-9]+(,[0-9]+)*$ ]] || { echo "LAYERS must be numbers separated by commas, e.g. 4,8,12 (got $LAYERS)" >&2; exit 1; }
+fi
 
 if [ -n "${RESUME_FROM:-}" ]; then
     for f in trainer_state.json optimizer.pt scheduler.pt; do
