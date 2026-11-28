@@ -25,7 +25,8 @@ from transformers import EarlyStoppingCallback, Trainer, TrainerCallback, Traini
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
 from model.build_recap import ATTENTION_SIZE_TO_REDUCE_FACTOR, build_recap
-from model.prefix_lm import AUDIO_MERGES, LORA_TARGET_SETS, AudioPrefixLM, build_prefix_lm
+from model.prefix_lm import (AUDIO_MERGES, LAYER_MIX_PARAMETER, LORA_TARGET_SETS, AudioPrefixLM,
+                             build_prefix_lm)
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +49,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--decoder_name", type=str, default="gpt2")
     p.add_argument("--audio_pool", type=int, default=4,
                    help="prefix: average this many feature vectors per audio token (default 4).")
+    p.add_argument("--feature_layers", type=str, default=None,
+                   help="prefix: the encoder layers stored side by side in the features, e.g. "
+                        "4,8,12 (as given to extract_beats_features.py --layers). The "
+                        "projector mixes them with learned weights. Default: one layer.")
     p.add_argument("--audio_merge", choices=list(AUDIO_MERGES), default="mean",
                    help="prefix: how each group of --audio_pool vectors becomes one audio token: "
                         "mean (default) averages them, concat places them side by side.")
@@ -61,6 +66,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--projector_lr", type=float, default=None,
                    help="prefix: learning rate of the audio projector, which starts from "
                         "scratch (default: --learning_rate, which then applies to LoRA only).")
+    p.add_argument("--layer_mix_lr", type=float, default=1e-3,
+                   help="prefix, with several --feature_layers: learning rate of the weights that "
+                        "mix the layers (default 1e-3). They are a handful of numbers that start "
+                        "equal, and at the LLM's small rate they would hardly move in a few epochs.")
     p.add_argument("--lora_warmup_epochs", type=float, default=0.0,
                    help="prefix: keep LoRA's learning rate at 0 for this many epochs, so only "
                         "the projector trains at first (default 0).")
@@ -112,6 +121,21 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--retrieval_mmr_lambda", type=float, default=None,
                    help="MMR relevance/diversity tradeoff (required when "
                         "--retrieval_strategy mmr).")
+
+    # Sound labels in the prompt ("Sounds: speech; typing"), from the audio
+    # encoder's own classifier (data/build_sound_labels.py).
+    p.add_argument("--sound_labels", type=int, default=0,
+                   help="Show up to this many of each clip's most probable sound labels in "
+                        "the prompt (0 = none, the default). Needs --train_labels (and "
+                        "--val_labels with a validation set).")
+    p.add_argument("--sound_label_min_prob", type=float, default=0.1,
+                   help="Only labels at least this probable are shown, except that the top "
+                        "one always is (default 0.1).")
+    p.add_argument("--train_labels", type=str, default=None, help="labels_train.json")
+    p.add_argument("--val_labels", type=str, default=None, help="labels_val.json")
+    p.add_argument("--zero_audio", action="store_true",
+                   help="Control run: replace the audio features by zeros in training and "
+                        "evaluation, to measure what the model can do without the audio.")
 
     p.add_argument("--per_device_train_batch_size", type=int, default=16)
     p.add_argument("--per_device_eval_batch_size", type=int, default=16)
@@ -198,10 +222,21 @@ def parse_args() -> argparse.Namespace:
                                   is not None or args.train_decoder or args.xattn_zero_init):
         p.error("--arch prefix has no cross-attention and trains LoRA, not the decoder: "
                 "drop --attention_size / --cross_attention_reduce_factor / --train_decoder / --xattn_zero_init")
-    prefix_only = {"--audio_pool": args.audio_pool != 4, "--audio_merge": args.audio_merge != "mean",
+    if args.sound_labels < 0:
+        p.error("--sound_labels must be 0 or more")
+    if args.sound_labels > 0 and not (args.train_labels and (args.val_labels or not args.val_csv)):
+        p.error("--sound_labels needs --train_labels, and --val_labels when there is a validation set")
+    if args.sound_labels == 0 and (args.train_labels or args.val_labels):
+        p.error("--train_labels / --val_labels are only read with --sound_labels N")
+    try:
+        args.feature_layers = [int(x) for x in args.feature_layers.split(",")] if args.feature_layers else []
+    except ValueError:
+        p.error("--feature_layers must be numbers separated by commas, e.g. 4,8,12")
+    prefix_only = {"--feature_layers": bool(args.feature_layers), "--audio_pool": args.audio_pool != 4, "--audio_merge": args.audio_merge != "mean",
                    "--lora_r": args.lora_r != 16, "--lora_alpha": args.lora_alpha is not None,
                    "--lora_dropout": args.lora_dropout != 0.05, "--lora_targets": args.lora_targets != "all",
                    "--projector_lr": args.projector_lr is not None,
+                   "--layer_mix_lr": args.layer_mix_lr != 1e-3,
                    "--lora_warmup_epochs": args.lora_warmup_epochs != 0}
     if args.arch != "prefix" and any(prefix_only.values()):
         p.error(f"{', '.join(k for k, v in prefix_only.items() if v)} only apply to --arch prefix")
@@ -211,6 +246,10 @@ def parse_args() -> argparse.Namespace:
         p.error("--lora_warmup_epochs must be 0 or more and below --num_train_epochs")
     if args.projector_lr is not None and args.projector_lr <= 0:
         p.error("--projector_lr must be positive")
+    if args.layer_mix_lr <= 0:
+        p.error("--layer_mix_lr must be positive")
+    if args.layer_mix_lr != 1e-3 and len(args.feature_layers) < 2:
+        p.error("--layer_mix_lr only applies with two or more --feature_layers")
     if args.attention_size is not None:
         args.cross_attention_reduce_factor = ATTENTION_SIZE_TO_REDUCE_FACTOR[args.attention_size]
     elif args.cross_attention_reduce_factor is None:
@@ -338,30 +377,41 @@ class RecapTrainer(Trainer):
     For the prefix model it can also give the audio projector its own
     learning rate (projector_lr) and hold LoRA's learning rate at 0 for the
     first lora_warmup_epochs, so the projector learns useful audio tokens
-    before the LLM starts to adapt. Both live in the optimizer's parameter
-    groups and the scheduler, so a resumed run continues them exactly."""
+    before the LLM starts to adapt. With several encoder layers, the weights
+    that mix them get their own rate too (layer_mix_lr). All of this lives in
+    the optimizer's parameter groups and the scheduler, so a resumed run
+    continues it exactly."""
 
-    def __init__(self, *args, projector_lr=None, lora_warmup_epochs=0.0, **kwargs):
+    def __init__(self, *args, projector_lr=None, lora_warmup_epochs=0.0, layer_mix_lr=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.projector_lr = projector_lr
+        self.layer_mix_lr = layer_mix_lr
         self.lora_warmup_epochs = lora_warmup_epochs
         self.lora_hold_steps = None          # set by create_scheduler
         if lora_warmup_epochs > 0:
             self.add_callback(FreshLoraState(self))
 
     def _split_rates(self) -> bool:
-        return self.projector_lr is not None or self.lora_warmup_epochs > 0
+        return self.projector_lr is not None or self.lora_warmup_epochs > 0 or self.layer_mix_lr is not None
+
+    @staticmethod
+    def _part(name: str) -> str:
+        if name == LAYER_MIX_PARAMETER:
+            return "mix"
+        return "projector" if name.startswith("projector.") else "lora"
 
     def create_optimizer(self):
         if not self._split_rates() or self.optimizer is not None:
             return super().create_optimizer()
         decay = set(self.get_decay_parameter_names(self.model))
         groups = []          # each tagged with its part, which create_scheduler reads
-        for part, lr in (("projector", self.projector_lr or self.args.learning_rate),
-                         ("lora", self.args.learning_rate)):
+        projector_lr = self.projector_lr or self.args.learning_rate
+        for part, lr in (("projector", projector_lr), ("lora", self.args.learning_rate),
+                         ("mix", self.layer_mix_lr or projector_lr)):
             for decays in (True, False):
+                # The mix weights are never decayed: decay would pull them back to an equal mix.
                 params = [p for n, p in self.model.named_parameters() if p.requires_grad
-                          and n.startswith("projector.") == (part == "projector") and (n in decay) == decays]
+                          and self._part(n) == part and (n in decay and part != "mix") == decays]
                 if params:
                     groups.append({"params": params, "lr": lr, "part": part,
                                    "weight_decay": self.args.weight_decay if decays else 0.0})
@@ -467,7 +517,7 @@ def model_input_width(model) -> int:
     when the encoder and decoder widths differ, otherwise the decoder's (for
     the prefix model, the projector's input)."""
     if isinstance(model, AudioPrefixLM):
-        return model.config.feature_width
+        return model.config.feature_width * max(1, len(model.config.feature_layers))
     proj = getattr(model, "enc_to_dec_proj", None)
     return proj.in_features if proj is not None else model.decoder.config.hidden_size
 
@@ -491,9 +541,15 @@ def main() -> None:
     set_seed(args.seed)
 
     if args.arch == "prefix":
+        n_feature_layers = max(1, len(args.feature_layers))
+        stored_width = feature_width(args.train_hdf5)
+        if stored_width % n_feature_layers:
+            raise SystemExit(f"{args.train_hdf5} is {stored_width} wide, which does not split into "
+                             f"{n_feature_layers} layers (--feature_layers)")
         model, tokenizer = build_prefix_lm(
             llm_name=args.decoder_name,
-            feature_width=feature_width(args.train_hdf5),
+            feature_width=stored_width // n_feature_layers,
+            feature_layers=args.feature_layers,
             audio_pool=args.audio_pool,
             audio_merge=args.audio_merge,
             lora_r=args.lora_r,
@@ -524,6 +580,16 @@ def main() -> None:
         if args.retrieval_strategy == "mmr":
             model.config.retrieval_mmr_lambda = args.retrieval_mmr_lambda
 
+    # Recorded only when used, so the prompts and inputs are rebuilt the same
+    # way at evaluation; checkpoints without them are unchanged.
+    if args.sound_labels > 0:
+        model.config.sound_labels = args.sound_labels
+        model.config.sound_label_min_prob = args.sound_label_min_prob
+    if args.zero_audio:
+        model.config.zero_audio = True
+    label_args = dict(labels_k=args.sound_labels, labels_min_prob=args.sound_label_min_prob,
+                      zero_audio=args.zero_audio)
+
     train_ds = RecapDataset(
         csv_path=args.train_csv,
         hdf5_path=args.train_hdf5,
@@ -534,6 +600,7 @@ def main() -> None:
         decoder_start_token_id=model.config.decoder_start_token_id,
         prompt_dropout=args.prompt_dropout,
         retrieval_k=args.retrieval_k if args.rag else None,
+        labels_path=args.train_labels, **label_args,
     )
     eval_ds = None
     if args.val_csv and args.val_hdf5 and args.val_retrieval_cache:
@@ -546,6 +613,7 @@ def main() -> None:
             max_length=args.max_length,
             decoder_start_token_id=model.config.decoder_start_token_id,
             retrieval_k=args.retrieval_k if args.rag else None,
+            labels_path=args.val_labels, **label_args,
         )
 
     collator = RecapCollator(pad_token_id=tokenizer.pad_token_id)
@@ -601,8 +669,11 @@ def main() -> None:
         callbacks=callbacks or None,
         projector_lr=args.projector_lr,
         lora_warmup_epochs=args.lora_warmup_epochs,
+        layer_mix_lr=args.layer_mix_lr if args.arch == "prefix" and len(args.feature_layers) > 1 else None,
     )
 
+    if trainer.layer_mix_lr is not None:
+        print(f"[layers] {len(args.feature_layers)} encoder layers; layer mix learning rate {args.layer_mix_lr:g}")
     resume_from = resume_checkpoint(args.output_dir) if args.resume else None
     if resume_from is None and args.resume_from:
         resume_from = args.resume_from
@@ -625,6 +696,10 @@ def main() -> None:
     print(f"[history] {n} rows -> {os.path.join(args.output_dir, 'history.csv')}")
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
+    if args.arch == "prefix" and len(args.feature_layers) > 1:
+        mix = model.projector.layer_mix().tolist()
+        print("[layers] learned mix of encoder layers: "
+              + ", ".join(f"layer {n}: {w:.3f}" for n, w in zip(args.feature_layers, mix)))
     if args.track_best:
         keep_best_checkpoint(trainer.state.best_model_checkpoint, args.output_dir)
 

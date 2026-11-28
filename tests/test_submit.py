@@ -21,7 +21,8 @@ CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM", "CHECKPOINT_EVERY",
            "BEATS_CKPT", "POOL", "DATA_DIR", "MATCH_FEAT_DIR",
            "TRAIN_DIR", "EMB_DIR", "DATASTORE_DIR", "CAP", "DROP_PCT", "ARCH", "LR",
-           "AUDIO_POOL", "AUDIO_MERGE", "LORA_R", "LORA_TARGETS", "LORA_DROPOUT", "PROJ_LR", "LORA_WARMUP"]
+           "AUDIO_POOL", "AUDIO_MERGE", "LORA_R", "LORA_TARGETS", "LORA_DROPOUT", "PROJ_LR", "LORA_WARMUP",
+           "LABELS", "LABELS_DIR", "ZERO_AUDIO", "LAYERS"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -241,3 +242,27 @@ def test_prefix_settings_are_checked(tmp_path):
     for only_prefix in (dict(AUDIO_POOL=2), dict(PROJ_LR="1e-3"), dict(LORA_WARMUP=1), dict(LORA_TARGETS="attn")):
         result = submit("run-c", tmp_path, **only_prefix)                 # GPT-2 run
         assert result.returncode != 0 and "ARCH=prefix" in result.stderr, only_prefix
+
+
+@pytest.mark.parametrize("env, name", [
+    (dict(LABELS=5), "c_paper_k0_lab5_s42"),
+    (dict(LABELS=0), "c_paper_k0_s42"),
+    (dict(ZERO_AUDIO=1), "c_paper_k0_noaudio_s42"),
+    (dict(LABELS=5, ZERO_AUDIO=1, ARCH="prefix"), "c_paper_k0_lab5_noaudio_prefix_s42"),
+    (dict(LABELS=3, ARCH="prefix", AUDIO_POOL=2, AUDIO_MERGE="concat"), "c_paper_k0_lab3_prefix_ap2c_s42"),
+])
+def test_labels_and_no_audio_show_in_the_run_name(tmp_path, env, name):
+    got = settings(submit("run-c", tmp_path, **env))
+    assert got["RUN_NAME"] == name
+    for k, v in env.items():
+        assert got[k] == str(v)
+
+
+def test_labels_settings_are_checked_and_passed_on(tmp_path):
+    for bad in (dict(LABELS="five"), dict(LABELS=-1), dict(ZERO_AUDIO=2)):
+        assert submit("run-c", tmp_path, **bad).returncode != 0, bad
+    got = settings(submit("run-a", tmp_path, LABELS=5, LABELS_DIR=tmp_path / "lab"))
+    assert got["LABELS_DIR"] == str(tmp_path / "lab") and got["RUN_NAME"] == "a_paper_k4_lab5_s42"
+    got = settings(submit("beats-features", tmp_path, BEATS_CKPT="b.pt", LAYERS="4,8,12",
+                          FEAT_DIR=tmp_path / "fl"))
+    assert got["LAYERS"] == "4,8,12" and got["FEAT_DIR"] == str(tmp_path / "fl")

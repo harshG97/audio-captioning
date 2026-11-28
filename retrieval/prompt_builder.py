@@ -42,7 +42,21 @@ GENERATION_STOP_STRINGS = (
 )
 
 
-def build_prompt(retrieved_captions: list[str]) -> str:
+SOUNDS_HEADER = "Sounds:"
+SOUND_LABEL_SEPARATOR = "; "      # AudioSet names contain commas ("Male speech, man speaking")
+
+
+def select_sound_labels(entries: Sequence, k: int, min_prob: float = 0.1) -> list[str]:
+    """Names of a clip's sound labels to show in the prompt: up to `k` of the
+    most probable ones with probability >= min_prob, and always the top one.
+    `entries` are [name, probability] pairs, most probable first."""
+    if k <= 0 or not entries:
+        return []
+    names = [name for name, prob in entries[:k] if prob >= min_prob]
+    return names or [entries[0][0]]
+
+
+def build_prompt(retrieved_captions: list[str], sound_labels: Optional[Sequence[str]] = None) -> str:
     """
     Build the RECAP prompt string from retrieved captions.
 
@@ -51,13 +65,22 @@ def build_prompt(retrieved_captions: list[str]) -> str:
             If empty, returns the no-retrieval baseline prompt
             ("This audio sounds like") so the same training/eval code path
             can be used for an ablation without retrieval.
+        sound_labels: optional sound labels of this clip (from the audio
+            encoder's own classifier). They go on a line of their own,
+            "Sounds: speech; typing", right before "This audio sounds like":
+            when a long prompt is trimmed from the left, the retrieved
+            captions go first and the labels stay.
     Returns:
         prompt string ready to feed into GPT-2 tokenizer
     """
+    tail = BASELINE_PROMPT
+    if sound_labels:
+        tail = (SOUNDS_HEADER + " " + SOUND_LABEL_SEPARATOR.join(n.strip() for n in sound_labels)
+                + CAPTION_SEPARATOR + BASELINE_PROMPT)
     if not retrieved_captions:
-        return BASELINE_PROMPT
+        return tail
     joined = CAPTION_SEPARATOR.join(c.strip() for c in retrieved_captions)
-    return PROMPT_TEMPLATE.format(retrieved=joined)
+    return RETRIEVAL_HEADER + CAPTION_SEPARATOR + joined + CAPTION_SEPARATOR + tail
 
 
 def build_prompt_with_metadata(
@@ -113,6 +136,12 @@ def first_k(captions: Sequence[str], k: Optional[int]) -> list[str]:
     serves every k up to the k it was built with.
     """
     return list(captions) if k is None else list(captions[:k])
+
+
+def checkpoint_sound_labels(config) -> tuple[int, float]:
+    """(number of sound labels in the prompt, their minimum probability) a
+    checkpoint was trained with; (0, ...) for checkpoints without labels."""
+    return int(getattr(config, "sound_labels", 0) or 0), float(getattr(config, "sound_label_min_prob", 0.1))
 
 
 def checkpoint_retrieval_k(config) -> Optional[int]:

@@ -69,11 +69,23 @@ LORA_TARGETS=${LORA_TARGETS:-all}
 LORA_DROPOUT=${LORA_DROPOUT:-0.05}
 PROJ_LR=${PROJ_LR:-}
 LORA_WARMUP=${LORA_WARMUP:-0}
+# Sound labels in the prompt ("Sounds: speech; typing"): LABELS=N shows up to
+# N per clip, read from LABELS_DIR/labels_<split>.json
+# (data/build_sound_labels.py; default LABELS_DIR is FEAT_DIR). Either model.
+# ZERO_AUDIO=1 is a control: the audio features are replaced by zeros.
+LABELS=${LABELS:-0}
+LABELS_DIR=${LABELS_DIR:-$FEAT_DIR}
+ZERO_AUDIO=${ZERO_AUDIO:-0}
+# Encoder layers stored side by side in the features (beats-features with
+# LAYERS=4,8,12 records them); the prefix model mixes them.
+FEATURE_LAYERS=$(sed -n 's/.*layers=\([0-9,]*\).*/\1/p' "$FEAT_DIR/encoder.txt" 2>/dev/null || true)
 PREFIX_SETTINGS="AUDIO_POOL=$AUDIO_POOL AUDIO_MERGE=$AUDIO_MERGE LORA_R=$LORA_R LORA_TARGETS=$LORA_TARGETS LORA_DROPOUT=$LORA_DROPOUT PROJ_LR=$PROJ_LR LORA_WARMUP=$LORA_WARMUP"
 PREFIX_DEFAULTS="AUDIO_POOL=4 AUDIO_MERGE=mean LORA_R=16 LORA_TARGETS=all LORA_DROPOUT=0.05 PROJ_LR= LORA_WARMUP=0"
 case $ARCH in
     xattn) [ "$PREFIX_SETTINGS" = "$PREFIX_DEFAULTS" ] \
-                || { echo "AUDIO_*, LORA_* and PROJ_LR only apply with ARCH=prefix" >&2; exit 1; } ;;
+                || { echo "AUDIO_*, LORA_* and PROJ_LR only apply with ARCH=prefix" >&2; exit 1; }
+           [ -z "$FEATURE_LAYERS" ] \
+                || { echo "$FEAT_DIR holds several encoder layers ($FEATURE_LAYERS): only ARCH=prefix reads those" >&2; exit 1; } ;;
     prefix) [ "$XATTN" = 7 ] && [ "$TRAIN_DECODER" = 0 ] \
                 || { echo "ARCH=prefix: XATTN and TRAIN_DECODER do not apply" >&2; exit 1; } ;;
     *) echo "ARCH must be xattn or prefix (got $ARCH)" >&2; exit 1 ;;
@@ -141,6 +153,8 @@ fi
 [ -z "$RESUME_FROM" ] || settings+=$'\n'"RESUME_FROM=$RESUME_FROM"
 [ "$ARCH" = xattn ] || settings+=$'\n'"ARCH=$ARCH"
 [ "$PREFIX_SETTINGS" = "$PREFIX_DEFAULTS" ] || settings+=$'\n'"$PREFIX_SETTINGS"
+[ "$LABELS" = 0 ] || settings+=$'\n'"LABELS=$LABELS LABELS_DIR=$LABELS_DIR"
+[ "$ZERO_AUDIO" = 0 ] || settings+=$'\n'"ZERO_AUDIO=$ZERO_AUDIO"
 if [ -f "$RUN_DIR/settings.txt" ]; then
     if ! diff <(cat "$RUN_DIR/settings.txt") <(echo "$settings") > /dev/null; then
         echo "$RUN_DIR was started with different settings (< before, > now):" >&2
@@ -173,6 +187,8 @@ else
 fi
 echo "K=$K cache=$cache_label epochs=$EPOCHS batch=$BATCH lr=$LR prompt_dropout=$PROMPT_DROPOUT patience=$PATIENCE seed=$SEED"
 echo "train csv: $DATA_DIR/train.csv  features: $FEAT_DIR ($FEATURES)  caches: $CACHE_DIR"
+if [ "$LABELS" != 0 ]; then echo "sound labels in the prompt: up to $LABELS, from $LABELS_DIR"; fi
+if [ "$ZERO_AUDIO" != 0 ]; then echo "CONTROL RUN: audio features replaced by zeros"; fi
 python -c "import torch, transformers; print('torch', torch.__version__, '| transformers', transformers.__version__, '| cuda', torch.cuda.is_available())"
 if [ "${ALLOW_CPU:-0}" != 1 ]; then
     python -c "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 'CUDA not available: compare the nvidia-smi CUDA version with the torch build')"
@@ -236,9 +252,22 @@ if [ "$ARCH" = prefix ]; then
     ARCH_ARGS=(--arch prefix --audio_pool "$AUDIO_POOL" --audio_merge "$AUDIO_MERGE" --lora_r "$LORA_R"
                --lora_targets "$LORA_TARGETS" --lora_dropout "$LORA_DROPOUT" --lora_warmup_epochs "$LORA_WARMUP")
     [ -n "$PROJ_LR" ] && ARCH_ARGS+=(--projector_lr "$PROJ_LR")
+    [ -n "$FEATURE_LAYERS" ] && ARCH_ARGS+=(--feature_layers "$FEATURE_LAYERS")
 else
     ARCH_ARGS=(--arch xattn --attention_size "$XATTN")
 fi
+# Sound labels: every split that is trained or evaluated on needs its file.
+labels_file() { echo "$LABELS_DIR/labels_$1.json"; }
+LABEL_TRAIN_ARGS=()
+if [ "$LABELS" != 0 ]; then
+    needed="train val"
+    for spec in $EVAL_SETS; do IFS=: read -r _ _ split <<< "$spec"; needed+=" $split"; done
+    for split in $needed; do
+        [ -f "$(labels_file "$split")" ] || { echo "missing $(labels_file "$split"): run data/build_sound_labels.py" >&2; exit 1; }
+    done
+    LABEL_TRAIN_ARGS=(--sound_labels "$LABELS" --train_labels "$(labels_file train)" --val_labels "$(labels_file val)")
+fi
+[ "$ZERO_AUDIO" = 1 ] && LABEL_TRAIN_ARGS+=(--zero_audio)
 BEST_ARGS=(--load_best_model_at_end)
 [ "$KEEP" = last ] && BEST_ARGS=(--track_best)
 [ -n "$RESUME_FROM" ] && BEST_ARGS+=(--resume_from "$RESUME_FROM")
@@ -250,7 +279,7 @@ step train python train.py \
     --output_dir "$RUN_DIR" \
     --encoder_name "$ENCODER_NAME" --decoder_name "$DECODER_NAME" \
     "${ARCH_ARGS[@]}" "${DECODER_ARGS[@]}" \
-    "${RAG_ARGS[@]}" --prompt_dropout "$PROMPT_DROPOUT" \
+    "${RAG_ARGS[@]}" --prompt_dropout "$PROMPT_DROPOUT" "${LABEL_TRAIN_ARGS[@]}" \
     --num_train_epochs "$EPOCHS" --per_device_train_batch_size "$BATCH" \
     --per_device_eval_batch_size "$BATCH" --learning_rate "$LR" --seed "$SEED" \
     --eval_save_strategy epoch "${BEST_ARGS[@]}" --save_total_limit 2 \
@@ -262,10 +291,12 @@ SPICE_ARGS=()
 # 2. Generate and score on each eval set
 for spec in $EVAL_SETS; do
     IFS=: read -r name csv split <<< "$spec"
+    LABEL_EVAL_ARGS=()
+    [ "$LABELS" != 0 ] && LABEL_EVAL_ARGS=(--labels_path "$(labels_file "$split")")
     step "eval_$name" python evaluate.py \
         --checkpoint "$RUN_DIR" --csv_path "$csv" \
         --hdf5_path "$FEAT_DIR/audiocaps_$split.hdf5" --retrieval_cache "$(cache "$split")" \
-        --output_path "$RUN_DIR/preds_$name.json"
+        --output_path "$RUN_DIR/preds_$name.json" "${LABEL_EVAL_ARGS[@]}"
     step "score_$name" python score_predictions.py \
         --predictions "$RUN_DIR/preds_$name.json" --output "$RUN_DIR/metrics_$name.json" \
         --train_csv "$DATA_DIR/train.csv" "${SPICE_ARGS[@]}"
@@ -273,8 +304,10 @@ done
 
 # 3. Audio ablation on the first eval set
 IFS=: read -r name csv split <<< "${EVAL_SETS%% *}"
+LABEL_ABLATE=""
+[ "$LABELS" != 0 ] && LABEL_ABLATE="--labels_path '$(labels_file "$split")'"
 step ablate bash -c "set -o pipefail; python scripts/ablate_audio.py --checkpoint '$RUN_DIR' --csv_path '$csv' \
-    --hdf5_path '$FEAT_DIR/audiocaps_$split.hdf5' --retrieval_cache '$(cache "$split")' \
+    --hdf5_path '$FEAT_DIR/audiocaps_$split.hdf5' --retrieval_cache '$(cache "$split")' $LABEL_ABLATE \
     --batch_size '$BATCH' --num_workers '$WORKERS' | tee '$RUN_DIR/ablate_$name.txt'"
 
 # 4. Copy baseline: output the top retrieved caption for every clip
@@ -294,13 +327,15 @@ fi
 #     to see at which epoch caption quality peaks
 if [ -d "$RUN_DIR/snapshots" ]; then
     IFS=: read -r name csv split <<< "${EVAL_SETS%% *}"
+    LABEL_EVAL_ARGS=()
+    [ "$LABELS" != 0 ] && LABEL_EVAL_ARGS=(--labels_path "$(labels_file "$split")")
     for snap in "$RUN_DIR"/snapshots/epoch* "$RUN_DIR"/snapshots/best; do
         [ -d "$snap" ] || continue
         e=$(basename "$snap")
         step "snap_${e}_eval_$name" python evaluate.py \
             --checkpoint "$snap" --csv_path "$csv" \
             --hdf5_path "$FEAT_DIR/audiocaps_$split.hdf5" --retrieval_cache "$(cache "$split")" \
-            --output_path "$snap/preds_$name.json"
+            --output_path "$snap/preds_$name.json" "${LABEL_EVAL_ARGS[@]}"
         step "snap_${e}_score_$name" python score_predictions.py \
             --predictions "$snap/preds_$name.json" --output "$snap/metrics_$name.json" \
             --train_csv "$DATA_DIR/train.csv" "${SPICE_ARGS[@]}"

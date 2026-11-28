@@ -27,6 +27,10 @@
 #   XATTN=28|14|7|3.5|1.75   cross-attention size in millions (default 7)  -> _x28
 #   TRAIN_DECODER=1          fine-tune all of GPT-2, not just cross-attention -> _ftdec
 #   PROMPT_DROPOUT=0.3       train without the retrieved captions 30% of the time -> _pd0.3
+#   LABELS=5                 show up to 5 of each clip's sound labels in the prompt
+#                            ("Sounds: speech; typing"), from LABELS_DIR/labels_<split>.json
+#                            (data/build_sound_labels.py; default FEAT_DIR)    -> _lab5
+#   ZERO_AUDIO=1             control: audio features replaced by zeros         -> _noaudio
 #   ARCH=prefix              a decoder-only LLM (DECODER_NAME, default Qwen/Qwen2.5-1.5B)
 #                            reading the audio as prefix tokens, with LoRA; defaults
 #                            EPOCHS=20 PATIENCE=3 LR=1e-4                     -> _prefix
@@ -146,6 +150,15 @@ if [ -n "${PROMPT_DROPOUT:-}" ]; then
     [[ $PROMPT_DROPOUT =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]] || { echo "PROMPT_DROPOUT must be a number from 0 to 1 (got $PROMPT_DROPOUT)" >&2; exit 1; }
     awk -v p="$PROMPT_DROPOUT" 'BEGIN { exit (p + 0 == 0) }' && VARIANT+="_pd$PROMPT_DROPOUT"
 fi
+if [ -n "${LABELS:-}" ]; then
+    [[ $LABELS =~ ^[0-9]+$ ]] || { echo "LABELS must be a whole number (got $LABELS)" >&2; exit 1; }
+    if [ "$LABELS" != 0 ]; then VARIANT+="_lab$LABELS"; fi
+fi
+case ${ZERO_AUDIO:-0} in
+    0) ;;
+    1) VARIANT+="_noaudio" ;;
+    *) echo "ZERO_AUDIO must be 0 or 1 (got $ZERO_AUDIO)" >&2; exit 1 ;;
+esac
 case ${KEEP:-best} in
     best) ;;
     last) VARIANT+="_last" ;;
@@ -303,7 +316,7 @@ if [ "$LOCAL" = 1 ]; then
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|AUDIO_POOL|AUDIO_MERGE|LORA_R|LORA_TARGETS|LORA_DROPOUT|PROJ_LR|LORA_WARMUP|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|AUDIO_POOL|AUDIO_MERGE|LORA_R|LORA_TARGETS|LORA_DROPOUT|PROJ_LR|LORA_WARMUP|PROMPT_DROPOUT|LABELS|LABELS_DIR|ZERO_AUDIO|LAYERS|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -318,7 +331,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|AUDIO_POOL|AUDIO_MERGE|LORA_R|LORA_TARGETS|LORA_DROPOUT|PROJ_LR|LORA_WARMUP|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|AUDIO_POOL|AUDIO_MERGE|LORA_R|LORA_TARGETS|LORA_DROPOUT|PROJ_LR|LORA_WARMUP|PROMPT_DROPOUT|LABELS|LABELS_DIR|ZERO_AUDIO|LAYERS|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

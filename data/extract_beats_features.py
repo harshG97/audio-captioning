@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
@@ -100,30 +101,62 @@ def pool_bands(hidden: torch.Tensor, n_bands: int, pool: int) -> torch.Tensor:
     return hidden.view(b, t, n_bands // pool, pool, d).mean(dim=3).reshape(b, t * (n_bands // pool), d)
 
 
+def parse_layers(text: str | None, n_layers: int) -> list[int] | None:
+    """'4,8,12' -> [4, 8, 12]: transformer layers counted from 1, ascending."""
+    if not text:
+        return None
+    try:
+        layers = [int(x) for x in text.split(",")]
+    except ValueError:
+        raise SystemExit(f"--layers must be numbers separated by commas (got {text!r})")
+    if layers != sorted(set(layers)) or layers[0] < 1 or layers[-1] > n_layers:
+        raise SystemExit(f"--layers must be ascending, without repeats, from 1 to {n_layers} (got {text})")
+    return layers
+
+
 class BEATsEncoder:
-    """Runs BEATs and returns the last layer's output, optionally pooled.
+    """Runs BEATs and returns the last layer's output, optionally pooled, or
+    the outputs of several layers side by side.
 
-    The output is taken from the transformer encoder with a forward hook, so
-    the vendored BEATs code runs unchanged; for fine-tuned checkpoints the
-    AudioSet label probabilities come back too."""
+    The outputs are taken with forward hooks, so the vendored BEATs code runs
+    unchanged; for fine-tuned checkpoints the AudioSet label probabilities
+    come back too. With `layers` (e.g. [4, 8, 12]) each clip's array is
+    (vectors, 768 * len(layers)), the layers in the given order. The last
+    layer is always taken from the encoder's output, so that part equals the
+    single-layer features exactly."""
 
-    def __init__(self, model: BEATs, device, pool: int = 4):
+    def __init__(self, model: BEATs, device, pool: int = 4, layers: list[int] | None = None):
         self.model = model.to(device).eval()
         self.device = device
         self.pool = pool
         # 128 mel bins cut into square patches: 8 frequency bands for 16x16.
         self.n_bands = 128 // model.cfg.input_patch_size
         self._hidden = None
+        self._by_layer: dict[int, torch.Tensor] = {}
+        self.n_layers = len(model.encoder.layers)
+        self.layers = layers
         model.encoder.register_forward_hook(self._keep_hidden)
+        for layer in layers or []:
+            if layer != self.n_layers:
+                model.encoder.layers[layer - 1].register_forward_hook(
+                    functools.partial(self._keep_layer, layer))
 
     def _keep_hidden(self, module, inputs, output):
         self._hidden = output[0]
 
+    def _keep_layer(self, layer, module, inputs, output):
+        self._by_layer[layer] = output[0].transpose(0, 1)       # (time, batch, width) -> batch first
+
     @torch.no_grad()
     def __call__(self, waveforms: list) -> tuple[np.ndarray, torch.Tensor | None]:
         source = torch.from_numpy(np.stack(waveforms)).to(self.device)
+        self._by_layer.clear()
         out, _ = self.model.extract_features(source)
-        hidden = pool_bands(self._hidden, self.n_bands, self.pool)
+        if self.layers:
+            hidden = torch.cat([pool_bands(self._hidden if layer == self.n_layers else self._by_layer[layer],
+                                           self.n_bands, self.pool) for layer in self.layers], dim=-1)
+        else:
+            hidden = pool_bands(self._hidden, self.n_bands, self.pool)
         probs = out if self.model.predictor is not None else None
         return hidden.float().cpu().numpy(), probs
 
@@ -199,6 +232,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--pool", type=int, default=4, choices=[1, 2, 4, 8],
                    help="Average this many neighbouring frequency bands per time step: "
                         "4 gives 124 vectors per 10 s clip, 1 keeps all 496 (default 4).")
+    p.add_argument("--layers", default=None,
+                   help="Transformer layers to store side by side, e.g. 4,8,12 (counted from "
+                        "1). Default: the last layer only.")
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--num_workers", type=int, default=0, help="Processes for audio loading")
     p.add_argument("--match_hdf5", default=None,
@@ -218,7 +254,8 @@ def main(argv=None) -> None:
     print(f"Using device: {device}")
     print(f"Loading BEATs: {args.checkpoint}")
     model, label_dict = load_beats(args.checkpoint)
-    encoder = BEATsEncoder(model, device, pool=args.pool)
+    layers = parse_layers(args.layers, len(model.encoder.layers))
+    encoder = BEATsEncoder(model, device, pool=args.pool, layers=layers)
     file_list = build_file_list(args.audio_dir, args.captions_csv, args.dataset)
     if not file_list:
         raise SystemExit("no audio files found")

@@ -32,7 +32,8 @@ from data.caption_filter import warn_if_cache_has_placeholders
 from model.device import best_device
 from model.prefix_lm import AudioPrefixLM, load_captioner
 from model.recap import RECAP
-from retrieval.prompt_builder import GENERATION_STOP_STRINGS, build_prompt, checkpoint_retrieval_k, first_k
+from retrieval.prompt_builder import (GENERATION_STOP_STRINGS, build_prompt, checkpoint_retrieval_k,
+                                      checkpoint_sound_labels, first_k, select_sound_labels)
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,6 +59,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no_repeat_ngram_size", type=int, default=0,
                    help="Forbid generating n-grams of this size that already appeared in the "
                         "generated suffix. 0 disables blocking (default).")
+    p.add_argument("--labels_path", type=str, default=None,
+                   help="Sound labels of this split (labels_<split>.json), required for a "
+                        "checkpoint trained with --sound_labels and refused otherwise.")
     p.add_argument("--min_new_tokens", type=int, default=0,
                    help="Do not end a caption before it has this many tokens: EOS and "
                         "tokens containing '.' or a newline, where captions are cut, are "
@@ -251,6 +255,18 @@ def main() -> None:
     warn_if_cache_has_placeholders(cache, source=args.retrieval_cache)
     k = args.retrieval_k if args.retrieval_k is not None else checkpoint_retrieval_k(model.config)
     print(f"Retrieved captions per prompt: {k if k is not None else 'all in cache'}")
+    labels_k, labels_min_prob = checkpoint_sound_labels(model.config)
+    if labels_k > 0 and not args.labels_path:
+        raise SystemExit(f"{args.checkpoint} was trained with sound labels in the prompt: "
+                         "pass --labels_path labels_<split>.json")
+    if labels_k == 0 and args.labels_path:
+        raise SystemExit(f"{args.checkpoint} was trained without sound labels: drop --labels_path")
+    sound_labels = json.loads(Path(args.labels_path).read_text()) if labels_k > 0 else None
+    zero_audio = bool(getattr(model.config, "zero_audio", False))
+    if labels_k > 0:
+        print(f"Sound labels per prompt: up to {labels_k} (probability >= {labels_min_prob})")
+    if zero_audio:
+        print("Audio features replaced by zeros (the checkpoint is a no-audio control)")
     print(f"Decoding: num_beams={args.num_beams} length_penalty={args.length_penalty} "
           f"no_repeat_ngram_size={args.no_repeat_ngram_size} "
           f"min_new_tokens={args.min_new_tokens} max_new_tokens={args.max_new_tokens}")
@@ -266,10 +282,17 @@ def main() -> None:
         unique_ids = [aid for aid in references_by_id if aid in available and aid in cache]
         for access_id in tqdm(unique_ids, desc="generate"):
             retrieved = first_k(cache[access_id], k)
-            prompt = build_prompt(retrieved)
+            labels_for_prompt = None
+            if sound_labels is not None:
+                if access_id not in sound_labels:
+                    raise SystemExit(f"{access_id} has no sound labels in {args.labels_path}")
+                labels_for_prompt = select_sound_labels(sound_labels[access_id], labels_k, labels_min_prob)
+            prompt = build_prompt(retrieved, labels_for_prompt)
             prompt_ids = _build_prompt_ids(tokenizer, prompt, args.max_prompt_length)
 
             feats = np.asarray(h5f[access_id][()], dtype=np.float32)
+            if zero_audio:
+                feats = np.zeros_like(feats)
             encoder_hidden = torch.from_numpy(feats).unsqueeze(0)
 
             pred_raw, stop_reason = generate_caption(

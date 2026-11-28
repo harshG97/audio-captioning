@@ -7,6 +7,7 @@ wav files, so nothing is downloaded.
 
 Run: python -m pytest tests/test_beats.py -q  (CPU, a few seconds)
 """
+import json
 import sys
 from pathlib import Path
 
@@ -197,3 +198,88 @@ def test_match_hdf5_stops_when_audio_is_missing(audio, checkpoint, tmp_path):
     with pytest.raises(SystemExit, match="1 clips"):
         _extract((partial, csv), tmp_path / "bad", checkpoint, "--match_hdf5", str(ref))
     assert not (tmp_path / "bad").exists()
+
+
+# ---- several layers side by side ----
+
+def test_layers_are_stored_side_by_side(audio, checkpoint, tmp_path):
+    last = _extract(audio, tmp_path / "last", checkpoint)
+    both = _extract(audio, tmp_path / "both", checkpoint, "--layers", "1,2")
+    assert sorted(both) == sorted(last)
+    model, _ = xb.load_beats(str(checkpoint))
+    root, _ = audio
+    for key, feats in both.items():
+        assert feats.shape == (124, 2 * WIDTH) and feats.dtype == np.float32
+        assert np.array_equal(feats[:, WIDTH:], last[key])          # the last layer, exactly as before
+        # Layer 1, computed straight from the model.
+        wave = torch.from_numpy(xb.load_clip(str(root / f"{key}.wav")))[None]
+        with torch.no_grad():
+            x = model.patch_embedding(model.preprocess(wave).unsqueeze(1))
+            x = model.layer_norm(x.reshape(1, x.shape[1], -1).transpose(1, 2))
+            x = model.post_extract_proj(x) if model.post_extract_proj is not None else x
+            layer1, _ = model.encoder.extract_features(x, tgt_layer=0)
+        expected = xb.pool_bands(layer1, 8, 4)[0].numpy()
+        assert np.allclose(feats[:, :WIDTH], expected, atol=1e-5)
+        assert not np.allclose(feats[:, :WIDTH], feats[:, WIDTH:], atol=1e-3)
+    one_by_one = _extract(audio, tmp_path / "b1", checkpoint, "--layers", "1,2", "--batch_size", "1")
+    assert all(np.allclose(one_by_one[k], both[k], atol=1e-5) for k in both)   # each batch gets its own layers
+    only_first = _extract(audio, tmp_path / "first", checkpoint, "--layers", "1")
+    assert all(np.allclose(only_first[k], both[k][:, :WIDTH], atol=1e-6) for k in both)
+
+
+def test_layers_option_is_checked():
+    assert xb.parse_layers(None, 12) is None and xb.parse_layers("4,8,12", 12) == [4, 8, 12]
+    for bad in ("0,4", "4,13", "8,4", "4,4", "a,b", "4;8"):
+        with pytest.raises(SystemExit):
+            xb.parse_layers(bad, 12)
+
+
+# ---- sound labels from the stored features ----
+
+def _features_dir(audio, checkpoint, tmp_path, *extra):
+    out = tmp_path / "feats"
+    _extract(audio, out, checkpoint, *extra)
+    encoder = f"beats {Path(checkpoint).name} pool=4" + (f" layers={extra[1]}" if extra else "")
+    (out / "encoder.txt").write_text(encoder + "\n")
+    return out
+
+
+def test_sound_labels_match_a_full_beats_pass(audio, checkpoint, tmp_path):
+    import data.build_sound_labels as bl
+    out = _features_dir(audio, checkpoint, tmp_path)
+    bl.main(["--checkpoint", str(checkpoint), "--feat_dir", str(out), "--splits", "val", "--top", "3"])
+    labels = json.loads((out / "labels_val.json").read_text())
+    model, label_dict = xb.load_beats(str(checkpoint))
+    enc = xb.BEATsEncoder(model, torch.device("cpu"), pool=4)
+    root, _ = audio
+    names = {"/m/09x0r": "speech", "/m/0bt9lr": "dog", "/m/06mb1": "rain"}
+    assert sorted(labels) == ["abc_0", "def_30", "ghi_5"]
+    for key, entries in labels.items():
+        _, probs = enc([xb.load_clip(str(root / f"{key}.wav"))])        # the model's own answer
+        expected = {names[label_dict[i]]: float(probs[0, i]) for i in range(3)}
+        assert [n for n, _ in entries] == sorted(expected, key=expected.get, reverse=True)
+        for name, prob in entries:
+            assert prob == pytest.approx(expected[name], abs=2e-4)
+        assert [p for _, p in entries] == sorted((p for _, p in entries), reverse=True)
+
+
+def test_sound_labels_refuse_the_wrong_inputs(audio, checkpoint, tmp_path):
+    import data.build_sound_labels as bl
+    out = _features_dir(audio, checkpoint, tmp_path)
+    args = ["--feat_dir", str(out), "--splits", "val"]
+    other = tmp_path / "other_name.pt"
+    other.write_bytes(Path(checkpoint).read_bytes())
+    with pytest.raises(SystemExit, match="was built with"):               # features from another checkpoint
+        bl.main(["--checkpoint", str(other), *args])
+    (out / "encoder.txt").write_text(f"beats {Path(checkpoint).name} pool=4 layers=1,2\n")
+    with pytest.raises(SystemExit, match="several layers"):
+        bl.main(["--checkpoint", str(checkpoint), *args])
+    (out / "encoder.txt").write_text(f"beats pre.pt pool=4\n")
+    torch.manual_seed(0)
+    cfg = dict(CFG, finetuned_model=False)
+    torch.save({"cfg": cfg, "model": BEATs(BEATsConfig(cfg)).state_dict()}, tmp_path / "pre.pt")
+    with pytest.raises(SystemExit, match="no AudioSet classifier"):
+        bl.main(["--checkpoint", str(tmp_path / "pre.pt"), *args])
+    (out / "encoder.txt").unlink()
+    with pytest.raises(SystemExit, match="no encoder.txt"):
+        bl.main(["--checkpoint", str(checkpoint), *args])

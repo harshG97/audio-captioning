@@ -31,7 +31,7 @@ from torch.utils.data import Dataset
 
 from data.access_id import build_access_id_column
 from data.caption_filter import drop_placeholder_captions, warn_if_cache_has_placeholders
-from retrieval.prompt_builder import build_prompt, first_k
+from retrieval.prompt_builder import build_prompt, first_k, select_sound_labels
 
 
 class RecapDataset(Dataset):
@@ -46,6 +46,10 @@ class RecapDataset(Dataset):
         decoder_start_token_id: Optional[int] = None,
         prompt_dropout: float = 0.0,
         retrieval_k: Optional[int] = None,
+        labels_path: Optional[str] = None,
+        labels_k: int = 0,
+        labels_min_prob: float = 0.1,
+        zero_audio: bool = False,
     ) -> None:
         df = pd.read_csv(csv_path)
         df = build_access_id_column(df, dataset)
@@ -67,6 +71,22 @@ class RecapDataset(Dataset):
             print(f"[RecapDataset] Skipping {dropped} rows missing audio features or retrieval.")
         self.df = df.loc[keep].reset_index(drop=True)
         self.cache = cache
+        # Sound labels shown in the prompt (data/build_sound_labels.py): the
+        # labels_k most probable ones per clip. Every clip must have them, or
+        # some prompts would silently differ from the rest.
+        self.labels_k = labels_k
+        self.labels_min_prob = labels_min_prob
+        self.sound_labels = None
+        if labels_k > 0:
+            if not labels_path:
+                raise ValueError("labels_k > 0 needs labels_path (data/build_sound_labels.py)")
+            self.sound_labels = json.loads(Path(labels_path).read_text())
+            missing = set(self.df["access_id"].astype(str)) - set(self.sound_labels)
+            if missing:
+                raise ValueError(f"{len(missing)} clips of {csv_path} have no sound labels in "
+                                 f"{labels_path}, e.g. {sorted(missing)[:3]}")
+        # Control: train or evaluate with the audio features replaced by zeros.
+        self.zero_audio = zero_audio
         # Use the first retrieval_k cached captions (None = all of them).
         self.retrieval_k = retrieval_k
         if retrieval_k is not None:
@@ -106,7 +126,11 @@ class RecapDataset(Dataset):
             # retrieved-caption text, by collapsing the prompt to BASELINE_PROMPT.
             retrieved = []
 
-        prompt = build_prompt(retrieved)
+        labels_for_prompt = None
+        if self.sound_labels is not None:
+            labels_for_prompt = select_sound_labels(self.sound_labels[access_id], self.labels_k,
+                                                    self.labels_min_prob)
+        prompt = build_prompt(retrieved, labels_for_prompt)
         prompt_ids = self.tokenizer(prompt, add_special_tokens=False)["input_ids"]
         cap_ids = self.tokenizer(" " + gt_caption, add_special_tokens=False)["input_ids"]
         cap_ids = cap_ids + [self.eos_id]
@@ -127,6 +151,8 @@ class RecapDataset(Dataset):
             labels[i] = -100
 
         feats = np.asarray(self._h5_handle()[access_id][()], dtype=np.float32)
+        if self.zero_audio:
+            feats = np.zeros_like(feats)
 
         return {
             "encoder_hidden_states": torch.from_numpy(feats),

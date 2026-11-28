@@ -290,6 +290,60 @@ own `TAG`. The separate rates and the warm-up live in the optimizer's
 parameter groups and the scheduler, so an interrupted run resumes them
 exactly. Checkpoints made before these options load unchanged.
 
+**Sound labels in the prompt (`LABELS=N`).** The fine-tuned BEATs checkpoint
+also carries its AudioSet classifier (527 sound classes).
+`data/build_sound_labels.py` applies it to the stored BEATs features (no
+audio or GPU needed, a few minutes) and writes each clip's 10 most likely
+labels to `labels_<split>.json` in the features folder. With `LABELS=5` the
+prompt gains a line before "This audio sounds like", listing up to 5 labels
+with probability 0.1 or more (always at least the top one):
+
+```
+Sounds: speech; typing; computer keyboard
+
+This audio sounds like
+```
+
+```bash
+B=$HOME/scratch/recap/features_beats
+python data/build_sound_labels.py --checkpoint $BEATS_CKPT --feat_dir $B
+ARCH=prefix LABELS=5 FEAT_DIR=$B TAG=beats scripts/submit.sh run-c                # labels and audio
+ARCH=prefix LABELS=5 ZERO_AUDIO=1 FEAT_DIR=$B TAG=beats scripts/submit.sh run-c   # labels alone
+```
+
+It works with either model and with retrieval (the labels line then follows
+the retrieved captions, so trimming a long prompt never drops it). Runs get
+`_lab5`. The count and threshold are stored in the checkpoint, and
+`evaluate.py` and `scripts/ablate_audio.py` then require `--labels_path`.
+`ZERO_AUDIO=1` (`_noaudio`) is a control that replaces the audio features
+with zeros in training and evaluation: with `LABELS` it shows how far the
+labels alone go, which is the number a labels-and-audio run has to beat.
+The classifier was trained on AudioSet, which AudioCaps is drawn from, so
+its labels may be more accurate on clips it saw in training than on new
+audio.
+
+**Several BEATs layers (`LAYERS=4,8,12`).** By default the features are
+BEATs' last layer, which its fine-tuning shaped for classification; earlier
+layers keep more of the acoustic detail. `LAYERS` on `beats-features` stores
+the listed transformer layers side by side (3 x 768 wide, about 50 GB for
+the paper split) and records them in `encoder.txt`. Give them their own
+`FEAT_DIR`. An `ARCH=prefix` run on that folder reads the layers from
+`encoder.txt`: the projector normalises each layer and mixes them with
+learned weights (softmax, equal at the start), then continues as usual. The
+log ends with the learned mix (`[layers] learned mix of encoder layers:
+layer 4: ...`). The mix weights train at their own rate (`--layer_mix_lr`,
+default 1e-3), since at LoRA's rate a handful of numbers would hardly move
+in a few epochs. GPT-2 runs refuse such a folder.
+
+```bash
+L=$HOME/scratch/recap/features_beats_l4-8-12
+LAYERS=4,8,12 FEAT_DIR=$L BEATS_CKPT=... scripts/submit.sh beats-features
+ARCH=prefix FEAT_DIR=$L TAG=beats-l4-8-12 scripts/submit.sh run-c
+```
+
+Sound labels need the last layer alone, so build them in the single-layer
+folder and point `LABELS_DIR` at it when combining the two.
+
 **More training data.** The paper split trains on 42,797 of AudioCaps 2.0's
 91,254 train clips. `scripts/submit.sh expand-data` (after `preprocess`)
 adds the other 48,457, filtered by `data/build_expanded_split.py`:

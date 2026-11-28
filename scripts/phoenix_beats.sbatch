@@ -31,6 +31,10 @@ FEAT_DIR=${FEAT_DIR:-$HOME/scratch/recap/features_beats}
 DATA_DIR=${DATA_DIR:-data/paper_split}
 BEATS_CKPT=${BEATS_CKPT:?set BEATS_CKPT to the BEATs .pt checkpoint}
 POOL=${POOL:-4}             # frequency bands averaged per time step: 4 -> 124 vectors, 1 -> 496
+# LAYERS=4,8,12 stores those transformer layers side by side (3 x 768 wide,
+# about three times the disk space) for the prefix model to mix. Default:
+# the last layer only. Give such features their own FEAT_DIR.
+LAYERS=${LAYERS:-}
 # CLAP features to match: every clip they hold must get BEATs features, so the
 # two are compared on the same clips (training skips clips without features).
 MATCH_FEAT_DIR=${MATCH_FEAT_DIR:-$HOME/scratch/recap/features}
@@ -60,6 +64,11 @@ if [ -f "$FEAT_DIR/clap.txt" ]; then
     exit 1
 fi
 encoder="beats $(basename "$BEATS_CKPT") pool=$POOL"
+LAYER_ARGS=()
+if [ -n "$LAYERS" ]; then
+    encoder+=" layers=$LAYERS"
+    LAYER_ARGS=(--layers "$LAYERS")
+fi
 if [ -f "$FEAT_DIR/encoder.txt" ] && [ "$(cat "$FEAT_DIR/encoder.txt")" != "$encoder" ]; then
     echo "$FEAT_DIR was built with '$(cat "$FEAT_DIR/encoder.txt")', not '$encoder'; use another FEAT_DIR" >&2
     exit 1
@@ -68,7 +77,6 @@ if [ ! -f "$FEAT_DIR/encoder.txt" ] && [ -n "$(ls -A "$FEAT_DIR/.done")" ]; then
     echo "$FEAT_DIR has finished steps but no encoder.txt; use another FEAT_DIR" >&2
     exit 1
 fi
-echo "$encoder" > "$FEAT_DIR/encoder.txt"
 
 echo "host: $(hostname)  job: ${SLURM_JOB_ID:-local}  start: $(date)"
 echo "audio: $AUDIO_DIR"
@@ -94,7 +102,9 @@ step() {  # step <name> <command...>
 # 0. The weights must load and recognise sounds: top AudioSet labels for a
 #    few val clips, next to their captions (fine-tuned checkpoints only).
 python data/extract_beats_features.py --checkpoint "$BEATS_CKPT" --audio_dir "$AUDIO_DIR" \
-    --captions_csv "$DATA_DIR/val.csv" --output_dir "$FEAT_DIR" --dataset audiocaps --check 3
+    --captions_csv "$DATA_DIR/val.csv" --output_dir "$FEAT_DIR" --dataset audiocaps --check 3 "${LAYER_ARGS[@]}"
+# Recorded once the settings are known to be usable (LAYERS is checked above).
+echo "$encoder" > "$FEAT_DIR/encoder.txt"
 
 # 1. BEATs features for cross-attention
 for split in train val test; do
@@ -106,7 +116,7 @@ for split in train val test; do
     fi
     step "features_$split" python data/extract_beats_features.py --checkpoint "$BEATS_CKPT" \
         --audio_dir "$AUDIO_DIR" --captions_csv "$DATA_DIR/$split.csv" --output_dir "$FEAT_DIR" \
-        --dataset audiocaps --split "$split" --pool "$POOL" --batch_size 32 --num_workers "$WORKERS" \
+        --dataset audiocaps --split "$split" --pool "$POOL" "${LAYER_ARGS[@]}" --batch_size 32 --num_workers "$WORKERS" \
         ${match[@]+"${match[@]}"}
 done
 

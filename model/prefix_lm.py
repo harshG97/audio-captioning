@@ -40,6 +40,7 @@ LORA_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", 
 # (the default), or the attention projections only.
 LORA_TARGET_SETS = {"all": LORA_TARGETS, "attn": LORA_TARGETS[:4]}
 AUDIO_MERGES = ("mean", "concat")
+LAYER_MIX_PARAMETER = "projector.layer_weights"   # the weights that mix several encoder layers
 
 
 class AudioPrefixConfig(PretrainedConfig):
@@ -48,8 +49,13 @@ class AudioPrefixConfig(PretrainedConfig):
     def __init__(self, llm_name: str = "Qwen/Qwen2.5-1.5B", feature_width: int = 768,
                  audio_pool: int = 4, lora_r: int = 16, lora_alpha: int = 32,
                  lora_dropout: float = 0.05, lora_targets=LORA_TARGETS,
-                 llm_revision: Optional[str] = None, audio_merge: str = "mean", **kwargs):
+                 llm_revision: Optional[str] = None, audio_merge: str = "mean",
+                 feature_layers=None, **kwargs):
         super().__init__(**kwargs)
+        # Encoder layers stored side by side in the features (e.g. [4, 8, 12]
+        # from extract_beats_features.py --layers); empty for a single layer.
+        # feature_width is the width of one layer.
+        self.feature_layers = list(feature_layers or [])
         if audio_merge not in AUDIO_MERGES:
             raise ValueError(f"audio_merge must be one of {AUDIO_MERGES} (got {audio_merge!r})")
         # How each group of audio_pool feature vectors becomes one audio token:
@@ -71,10 +77,20 @@ class AudioProjector(nn.Module):
     """(B, T, feature_width) -> (B, T / pool, llm_width): each group of `pool`
     consecutive feature vectors becomes one audio token, by averaging them
     ("mean") or by placing them side by side ("concat", which keeps every
-    value), followed by LayerNorm and a 2-layer MLP."""
+    value), followed by LayerNorm and a 2-layer MLP.
 
-    def __init__(self, feature_width: int, llm_width: int, pool: int, merge: str = "mean"):
+    With n_layers > 1 the input holds that many encoder layers side by side,
+    (B, T, n_layers * feature_width). Each is normalised and they are mixed
+    into one with learned weights (softmax of layer_weights, equal at the
+    start), which also shows which layers the model came to rely on."""
+
+    def __init__(self, feature_width: int, llm_width: int, pool: int, merge: str = "mean",
+                 n_layers: int = 1):
         super().__init__()
+        self.feature_width = feature_width
+        self.n_layers = n_layers
+        if n_layers > 1:
+            self.layer_weights = nn.Parameter(torch.zeros(n_layers))
         if pool < 1:
             raise ValueError(f"audio_pool must be at least 1 (got {pool})")
         if merge not in AUDIO_MERGES:
@@ -86,7 +102,18 @@ class AudioProjector(nn.Module):
         self.mlp = nn.Sequential(nn.Linear(width, llm_width), nn.GELU(),
                                  nn.Linear(llm_width, llm_width))
 
+    def layer_mix(self) -> torch.Tensor:
+        """The share of each stored layer in the mix (sums to 1)."""
+        return torch.softmax(self.layer_weights.float(), dim=0)
+
     def forward(self, feats: torch.Tensor) -> torch.Tensor:
+        if feats.shape[-1] != self.feature_width * self.n_layers:
+            raise ValueError(f"features are {feats.shape[-1]} wide; expected {self.n_layers} layer(s) "
+                             f"of {self.feature_width}")
+        if self.n_layers > 1:
+            layers = feats.view(*feats.shape[:2], self.n_layers, self.feature_width)
+            layers = F.layer_norm(layers, (self.feature_width,))
+            feats = (layers * self.layer_mix().to(layers.dtype).view(1, 1, -1, 1)).sum(dim=2)
         b, t, d = feats.shape
         if t % self.pool:
             raise ValueError(f"{t} feature vectors per clip do not split into groups of {self.pool}")
@@ -112,7 +139,8 @@ class AudioPrefixLM(PreTrainedModel):
                           bias="none", task_type="CAUSAL_LM")
         self.llm = get_peft_model(base, lora)
         self.projector = AudioProjector(config.feature_width, base.config.hidden_size, config.audio_pool,
-                                        getattr(config, "audio_merge", "mean"))
+                                        getattr(config, "audio_merge", "mean"),
+                                        n_layers=max(1, len(getattr(config, "feature_layers", None) or [])))
 
     # ---- inputs -------------------------------------------------------------
 
@@ -198,7 +226,7 @@ class AudioPrefixLM(PreTrainedModel):
 
 def build_prefix_lm(llm_name: str, feature_width: int, audio_pool: int = 4, lora_r: int = 16,
                     lora_alpha: int = 32, lora_dropout: float = 0.05, audio_merge: str = "mean",
-                    lora_targets: str = "all"):
+                    lora_targets: str = "all", feature_layers=None):
     """Model and tokenizer for training. The start token (fed after the audio)
     and the end token are the tokenizer's EOS, as for a document boundary."""
     tokenizer = AutoTokenizer.from_pretrained(llm_name)
@@ -206,6 +234,7 @@ def build_prefix_lm(llm_name: str, feature_width: int, audio_pool: int = 4, lora
         tokenizer.pad_token = tokenizer.eos_token
     config = AudioPrefixConfig(llm_name=llm_name, feature_width=feature_width, audio_pool=audio_pool,
                                audio_merge=audio_merge, lora_targets=LORA_TARGET_SETS[lora_targets],
+                               feature_layers=feature_layers,
                                lora_r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
                                decoder_start_token_id=tokenizer.eos_token_id,
                                eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id)
@@ -215,7 +244,8 @@ def build_prefix_lm(llm_name: str, feature_width: int, audio_pool: int = 4, lora
     total = sum(p.numel() for p in model.parameters())
     print(f"[prefix_lm] {llm_name}: trainable {trained:,} / {total:,} parameters "
           f"(projector + LoRA r={lora_r} on {lora_targets}); audio tokens: {audio_merge} of {audio_pool}; "
-          f"revision {model.config.llm_revision or 'local'}")
+          f"revision {model.config.llm_revision or 'local'}"
+          + (f"; encoder layers {feature_layers}" if feature_layers else ""))
     return model, tokenizer
 
 

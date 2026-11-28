@@ -555,3 +555,231 @@ def test_train_py_passes_the_model_options_on(monkeypatch, llm_dir, data_files, 
     cfg = json.loads((out2 / "config.json").read_text())
     assert (cfg["audio_pool"], cfg["audio_merge"], cfg["lora_r"], cfg["lora_alpha"], cfg["lora_dropout"]) \
         == (4, "mean", 16, 32, 0.05) and len(cfg["lora_targets"]) == 7
+
+
+# ---- sound labels in the prompt, and the no-audio control ----
+
+SOUNDS = {"abc_0": [["dog", 0.9], ["bark", 0.5], ["animal", 0.05]],
+          "def_0": [["rain", 0.08], ["thunder", 0.02], ["wind", 0.01]]}
+
+
+def test_sound_labels_are_chosen_and_placed_before_the_question():
+    from retrieval.prompt_builder import PROMPT_TEMPLATE, select_sound_labels
+    assert select_sound_labels(SOUNDS["abc_0"], 5) == ["dog", "bark"]            # 0.05 is below 0.1
+    assert select_sound_labels(SOUNDS["abc_0"], 1) == ["dog"]
+    assert select_sound_labels(SOUNDS["def_0"], 5) == ["rain"]                   # the top one always
+    assert select_sound_labels(SOUNDS["abc_0"], 5, min_prob=0.0) == ["dog", "bark", "animal"]
+    assert select_sound_labels(SOUNDS["abc_0"], 0) == [] and select_sound_labels([], 5) == []
+    assert build_prompt([]) == BASELINE_PROMPT                                    # unchanged without labels
+    assert build_prompt(["a.", "b."]) == PROMPT_TEMPLATE.format(retrieved="a.\n\nb.")
+    assert build_prompt([], ["dog", "bark"]) == "Sounds: dog; bark\n\n" + BASELINE_PROMPT
+    assert build_prompt(["a.", "b."], ["dog"]) == \
+        "Similar audios sound like\n\na.\n\nb.\n\nSounds: dog\n\n" + BASELINE_PROMPT
+
+
+def _labels_file(tmp_path, sounds=SOUNDS):
+    path = tmp_path / "labels.json"
+    path.write_text(json.dumps(sounds))
+    return str(path)
+
+
+def test_dataset_puts_the_labels_in_the_prompt_only(prefix, data_files, tmp_path):
+    model, tok = prefix
+    plain, _ = _batch(model, tok, data_files)
+    batch, ds = _batch(model, tok, data_files, labels_path=_labels_file(tmp_path), labels_k=5)
+    item = ds[0]
+    prompt = build_prompt(RETRIEVED["abc_0"], ["dog", "bark"])
+    n = len(tok(prompt, add_special_tokens=False)["input_ids"])
+    assert tok.decode(item["decoder_input_ids"][1:1 + n]) == prompt
+    assert (item["labels"][:n] == -100).all() and (item["labels"][n:] != -100).all()
+    target = lambda b: [row[row != -100].tolist() for row in b["labels"]]
+    assert target(batch) == target(plain)                        # the captions to learn are the same
+    assert torch.equal(batch["encoder_outputs"], plain["encoder_outputs"])
+    assert "Sounds: rain\n\n" in tok.decode(ds[1]["decoder_input_ids"])
+    with pytest.raises(ValueError, match="have no sound labels"):
+        _batch(model, tok, data_files, labels_path=_labels_file(tmp_path, {"abc_0": SOUNDS["abc_0"]}), labels_k=5)
+    with pytest.raises(ValueError, match="needs labels_path"):
+        _batch(model, tok, data_files, labels_k=5)
+
+
+def test_a_long_prompt_loses_retrieved_captions_before_labels(prefix, data_files, tmp_path):
+    """Prompts over the length limit are trimmed from the left: the labels,
+    placed right before the question, outlast the retrieved captions."""
+    model, tok = prefix
+    csv, h5, cache = data_files
+    def item(max_length):
+        return RecapDataset(csv_path=csv, hdf5_path=h5, retrieval_cache_path=cache, tokenizer=tok,
+                            max_length=max_length, decoder_start_token_id=tok.eos_token_id,
+                            labels_path=_labels_file(tmp_path), labels_k=5)[0]
+    full = item(128)
+    n_caption = int((full["labels"] != -100).sum())
+    tail = "Sounds: dog; bark\n\n" + BASELINE_PROMPT
+    n_tail = len(tok(tail, add_special_tokens=False)["input_ids"])
+    assert int((full["labels"] == -100).sum()) > n_tail + 2            # there is something to trim
+    tight = item(1 + n_caption + n_tail + 2)                           # room for the tail and 2 more tokens
+    n_prompt = int((tight["labels"] == -100).sum())
+    kept = tok.decode(tight["decoder_input_ids"][1:1 + n_prompt])
+    assert n_prompt == n_tail + 2 and kept.endswith(tail) and "Similar audios" not in kept
+    assert tight["labels"][n_prompt:].tolist() == full["labels"][full["labels"] != -100].tolist()
+
+
+def test_zero_audio_replaces_the_features(prefix, data_files):
+    model, tok = prefix
+    plain, _ = _batch(model, tok, data_files)
+    zeroed, _ = _batch(model, tok, data_files, zero_audio=True)
+    assert plain["encoder_outputs"].abs().sum() > 0 and not zeroed["encoder_outputs"].any()
+    assert zeroed["encoder_outputs"].shape == plain["encoder_outputs"].shape
+    assert torch.equal(zeroed["decoder_input_ids"], plain["decoder_input_ids"])
+
+
+def _evaluate(monkeypatch, checkpoint, data_files, out, *extra):
+    """Run evaluate.py; return its predictions and what generate_caption was given."""
+    import evaluate
+    csv, h5, cache = data_files
+    seen = []
+    original = evaluate.generate_caption
+    def spy(**kw):
+        seen.append(kw)
+        return original(**kw)
+    monkeypatch.setattr(evaluate, "generate_caption", spy)
+    monkeypatch.setattr(sys, "argv", ["evaluate.py", "--checkpoint", str(checkpoint), "--csv_path", csv,
+                                      "--hdf5_path", h5, "--retrieval_cache", cache, "--output_path", str(out),
+                                      "--max_new_tokens", "4", "--device", "cpu", *extra])
+    evaluate.main()
+    return json.loads(Path(out).read_text()), seen
+
+
+def test_labels_and_zero_audio_carry_from_training_to_evaluation(monkeypatch, llm_dir, data_files, tmp_path):
+    labels = _labels_file(tmp_path)
+    run = tmp_path / "run"
+    _train(monkeypatch, llm_dir, data_files, run, 1, "--sound_labels", "5", "--train_labels", labels,
+           "--val_labels", labels, "--zero_audio")
+    cfg = json.loads((run / "config.json").read_text())
+    assert cfg["sound_labels"] == 5 and cfg["sound_label_min_prob"] == 0.1 and cfg["zero_audio"] is True
+    with pytest.raises(SystemExit, match="trained with sound labels"):
+        _evaluate(monkeypatch, run, data_files, tmp_path / "p0.json")
+    tok = load_captioner(str(run))  # noqa: F841  (loads without labels arguments)
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(str(run))
+    preds, seen = _evaluate(monkeypatch, run, data_files, tmp_path / "p1.json", "--labels_path", labels)
+    assert len(preds) == 2 and len(seen) == 2
+    assert tok.decode(seen[0]["prompt_ids"]) == build_prompt(RETRIEVED["abc_0"], ["dog", "bark"])
+    assert tok.decode(seen[1]["prompt_ids"]) == build_prompt(RETRIEVED["def_0"], ["rain"])
+    assert all(not kw["encoder_hidden"].any() for kw in seen)            # zeros, as in training
+    # A run without either: nothing recorded, labels refused, audio intact.
+    plain = tmp_path / "plain"
+    _train(monkeypatch, llm_dir, data_files, plain, 1)
+    cfg = json.loads((plain / "config.json").read_text())
+    assert "sound_labels" not in cfg and "zero_audio" not in cfg
+    with pytest.raises(SystemExit, match="without sound labels"):
+        _evaluate(monkeypatch, plain, data_files, tmp_path / "p2.json", "--labels_path", labels)
+    _, seen = _evaluate(monkeypatch, plain, data_files, tmp_path / "p3.json")
+    assert tok.decode(seen[0]["prompt_ids"]) == build_prompt(RETRIEVED["abc_0"])
+    assert all(kw["encoder_hidden"].any() for kw in seen)
+
+
+def test_train_py_checks_the_label_options(monkeypatch, llm_dir, data_files, tmp_path):
+    import train
+    labels = _labels_file(tmp_path)
+    for bad in (["--sound_labels", "5"], ["--sound_labels", "5", "--train_labels", labels],
+                ["--train_labels", labels], ["--sound_labels", "-1"]):
+        monkeypatch.setattr(sys, "argv", _argv(llm_dir, data_files, tmp_path, 1, *bad))
+        with pytest.raises(SystemExit):
+            train.parse_args()
+
+
+# ---- several encoder layers, mixed by the projector ----
+
+def test_projector_mixes_layers_with_learned_weights():
+    torch.manual_seed(0)
+    proj = AudioProjector(FEAT, 64, pool=4, n_layers=3)
+    feats = torch.randn(2, ENC_LEN, 3 * FEAT)
+    assert proj.layer_mix().tolist() == pytest.approx([1 / 3] * 3)
+    normed = [F.layer_norm(feats[..., i * FEAT:(i + 1) * FEAT], (FEAT,)) for i in range(3)]
+    single = AudioProjector(FEAT, 64, pool=4)
+    single.load_state_dict({k: v for k, v in proj.state_dict().items() if k != "layer_weights"})
+    assert torch.allclose(proj(feats), single(sum(normed) / 3), atol=1e-5)
+    with torch.no_grad():
+        proj.layer_weights.copy_(torch.tensor([10.0, -10.0, -10.0]))          # all weight on the first
+    assert torch.allclose(proj(feats), single(normed[0]), atol=1e-4)
+    assert "layer_weights" in proj.state_dict() and "layer_weights" not in single.state_dict()
+    with pytest.raises(ValueError, match="expected 3 layer"):
+        proj(torch.randn(2, ENC_LEN, 2 * FEAT))
+    with pytest.raises(ValueError, match="expected 1 layer"):
+        single(feats)
+
+
+def _two_layer_files(data_files, tmp_path):
+    csv, h5, cache = data_files
+    wide = tmp_path / "wide.hdf5"
+    rng = np.random.default_rng(1)
+    with h5py.File(h5, "r") as src, h5py.File(wide, "w") as dst:
+        for key in src:
+            dst.create_dataset(key, data=np.concatenate(
+                [src[key][()], rng.standard_normal((ENC_LEN, FEAT)).astype(np.float32)], axis=1))
+    return csv, str(wide), cache
+
+
+def test_train_py_with_several_layers(monkeypatch, llm_dir, data_files, tmp_path, capsys):
+    files = _two_layer_files(data_files, tmp_path)
+    out = tmp_path / "run"
+    _train(monkeypatch, llm_dir, files, out, 2, "--feature_layers", "4,12")
+    printed = capsys.readouterr().out
+    assert "[layers] learned mix of encoder layers: layer 4: 0." in printed and "layer 12: 0." in printed
+    cfg = json.loads((out / "config.json").read_text())
+    assert cfg["feature_layers"] == [4, 12] and cfg["feature_width"] == FEAT
+    saved = _trained(out)
+    assert saved["projector.layer_weights"].shape == (2,)
+    # They were trained, at their own rate (1e-3) and not the run's 1e-2: Adam's
+    # first steps are about one learning rate each, and this run has 4 steps.
+    moved = saved["projector.layer_weights"].abs().max().item()
+    assert 0 < moved < 4.5e-3
+    assert "layer mix learning rate 0.001" in printed
+    model = load_captioner(str(out))
+    assert model.projector.n_layers == 2
+    preds, seen = _evaluate(monkeypatch, out, files, tmp_path / "p.json")
+    assert len(preds) == 2 and seen[0]["encoder_hidden"].shape == (1, ENC_LEN, 2 * FEAT)
+    # The features must split into the stated number of layers, and match the model.
+    monkeypatch.setattr(sys, "argv", _argv(llm_dir, files, tmp_path / "x", 1, "--feature_layers", "1,2,3,4,5"))
+    import train
+    with pytest.raises(SystemExit, match="does not split"):
+        train.main()
+    # One listed layer is a plain single-layer run: nothing to mix, and no mix to report.
+    capsys.readouterr()
+    _train(monkeypatch, llm_dir, data_files, tmp_path / "one", 1, "--feature_layers", "8")
+    assert "[layers]" not in capsys.readouterr().out
+    assert "projector.layer_weights" not in _trained(tmp_path / "one")
+    assert json.loads((tmp_path / "one" / "config.json").read_text())["feature_layers"] == [8]
+    for bad in (["--layer_mix_lr", "1e-2"], ["--feature_layers", "4,12", "--layer_mix_lr", "0"]):
+        monkeypatch.setattr(sys, "argv", _argv(llm_dir, files if "4,12" in bad else data_files, tmp_path / "y", 1, *bad))
+        with pytest.raises(SystemExit):
+            train.main()
+
+
+def test_layer_mix_weights_get_their_own_learning_rate(tmp_path, llm_dir):
+    model, _ = build_prefix_lm(llm_dir, feature_width=FEAT, feature_layers=[4, 8, 12], lora_r=2)
+    names = [n for n, p in model.named_parameters() if p.requires_grad]
+    assert "projector.layer_weights" in names
+    for kw, mix_lr, proj_lr in ((dict(layer_mix_lr=5e-3), 5e-3, 1e-3),
+                                (dict(layer_mix_lr=5e-3, projector_lr=1e-2), 5e-3, 1e-2)):
+        opt = _trainer(model, tmp_path, **kw).create_optimizer()
+        by_param = {id(p): g for g in opt.param_groups for p in g["params"]}
+        assert sum(len(g["params"]) for g in opt.param_groups) == len(names) == len(by_param)
+        for n, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            g = by_param[id(p)]
+            if n == "projector.layer_weights":
+                assert (g["part"], g["lr"], g["weight_decay"]) == ("mix", mix_lr, 0.0)     # never decayed
+            elif n.startswith("projector."):
+                assert (g["part"], g["lr"]) == ("projector", proj_lr)
+            else:
+                assert (g["part"], g["lr"]) == ("lora", 1e-3)
+    # With the LoRA hold, the mix trains from the start, like the projector.
+    trainer = _trainer(model, tmp_path, layer_mix_lr=5e-3, lora_warmup_epochs=1)
+    opt = trainer.create_optimizer()
+    sched = trainer.create_scheduler(num_training_steps=40, optimizer=opt)
+    for _ in range(5):
+        opt.step(); sched.step()
+    rates = {g["part"]: g["lr"] for g in opt.param_groups}
+    assert rates["lora"] == 0 and rates["mix"] == pytest.approx(5e-3 * 35 / 38) and rates["projector"] > 0

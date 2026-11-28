@@ -38,7 +38,7 @@ if _REPO_ROOT not in sys.path:
 
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
-from retrieval.prompt_builder import checkpoint_retrieval_k
+from retrieval.prompt_builder import checkpoint_retrieval_k, checkpoint_sound_labels
 from model.device import best_device
 from model.prefix_lm import load_captioner
 
@@ -49,6 +49,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--csv_path", type=str, required=True)
     p.add_argument("--hdf5_path", type=str, required=True)
     p.add_argument("--retrieval_cache", type=str, required=True)
+    p.add_argument("--labels_path", type=str, default=None,
+                   help="Sound labels of this split, for a checkpoint trained with them.")
     p.add_argument("--dataset", type=str, default="audiocaps", choices=DATASETS)
     p.add_argument("--batch_size", type=int, default=16)
     p.add_argument("--num_workers", type=int, default=0)
@@ -87,6 +89,9 @@ def main() -> None:
     model = load_captioner(args.checkpoint).to(device)   # RECAP or the prefix model
     model.eval()
 
+    labels_k, labels_min_prob = checkpoint_sound_labels(model.config)
+    if (labels_k > 0) != bool(args.labels_path):
+        raise SystemExit("--labels_path is needed for, and only for, a checkpoint trained with sound labels")
     dataset = RecapDataset(
         csv_path=args.csv_path,
         hdf5_path=args.hdf5_path,
@@ -96,6 +101,7 @@ def main() -> None:
         max_length=args.max_length,
         decoder_start_token_id=model.config.decoder_start_token_id,
         retrieval_k=checkpoint_retrieval_k(model.config),
+        labels_path=args.labels_path, labels_k=labels_k, labels_min_prob=labels_min_prob,
     )
     collator = RecapCollator(pad_token_id=tokenizer.pad_token_id)
     loader = DataLoader(
