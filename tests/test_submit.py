@@ -20,7 +20,8 @@ CLEARED = ["FEAT_DIR", "CACHE_DIR", "ENCODER_NAME", "DECODER_NAME", "RUN_NAME",
            "CLAP", "RUNS_DIR", "EVAL_SETS", "RECAP_ACCOUNT", "KEEP", "PATIENCE",
            "SNAPSHOT_EVERY", "EPOCHS", "RESUME_FROM", "CHECKPOINT_EVERY",
            "BEATS_CKPT", "POOL", "DATA_DIR", "MATCH_FEAT_DIR",
-           "TRAIN_DIR", "EMB_DIR", "DATASTORE_DIR", "CAP", "DROP_PCT", "ARCH", "LR"]
+           "TRAIN_DIR", "EMB_DIR", "DATASTORE_DIR", "CAP", "DROP_PCT", "ARCH", "LR",
+           "AUDIO_POOL", "AUDIO_MERGE", "LORA_R", "LORA_TARGETS", "LORA_DROPOUT", "PROJ_LR", "LORA_WARMUP"]
 
 
 def submit(job, tmp_path, **env_vars):
@@ -213,3 +214,30 @@ def test_prefix_arch_rejects_cross_attention_settings(tmp_path):
 
 def test_default_runs_keep_the_old_learning_rate(tmp_path):
     assert "LR" not in settings(submit("run-a", tmp_path))
+
+
+@pytest.mark.parametrize("env, suffix", [
+    (dict(AUDIO_POOL=2, AUDIO_MERGE="concat"), "_prefix_ap2c"),
+    (dict(AUDIO_POOL=1), "_prefix_ap1"),
+    (dict(AUDIO_MERGE="concat"), "_prefix_ap4c"),
+    (dict(PROJ_LR="1e-3"), "_prefix_plr1e-3"),
+    (dict(LORA_WARMUP=1), "_prefix_wu1"),
+    (dict(LORA_TARGETS="attn", LORA_R=8, LORA_DROPOUT=0.1), "_prefix_r8_attn_ld0.1"),
+    (dict(AUDIO_POOL=2, AUDIO_MERGE="concat", PROJ_LR="1e-3", LORA_WARMUP=1), "_prefix_ap2c_plr1e-3_wu1"),
+    (dict(AUDIO_POOL=4, AUDIO_MERGE="mean", LORA_R=16, LORA_TARGETS="all", LORA_DROPOUT=0.05, LORA_WARMUP=0),
+     "_prefix"),                                              # the defaults add nothing
+])
+def test_prefix_settings_show_in_the_run_name(tmp_path, env, suffix):
+    got = settings(submit("run-c", tmp_path, ARCH="prefix", **env))
+    assert got["RUN_NAME"] == f"c_paper_k0{suffix}_s42"
+    for k, v in env.items():
+        assert got[k] == str(v)
+
+
+def test_prefix_settings_are_checked(tmp_path):
+    for bad in (dict(AUDIO_POOL=3), dict(AUDIO_MERGE="max"), dict(LORA_TARGETS="mlp"), dict(LORA_R=0),
+                dict(LORA_R="8.5"), dict(PROJ_LR="fast"), dict(LORA_WARMUP="one"), dict(LORA_DROPOUT="x")):
+        assert submit("run-c", tmp_path, ARCH="prefix", **bad).returncode != 0, bad
+    for only_prefix in (dict(AUDIO_POOL=2), dict(PROJ_LR="1e-3"), dict(LORA_WARMUP=1), dict(LORA_TARGETS="attn")):
+        result = submit("run-c", tmp_path, **only_prefix)                 # GPT-2 run
+        assert result.returncode != 0 and "ARCH=prefix" in result.stderr, only_prefix

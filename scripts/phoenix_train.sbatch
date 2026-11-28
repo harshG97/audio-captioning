@@ -57,8 +57,23 @@ TRAIN_DECODER=${TRAIN_DECODER:-0}   # 1 = fine-tune all of GPT-2 too
 # (DECODER_NAME, e.g. Qwen/Qwen2.5-1.5B) reading the audio as prefix tokens,
 # trained with LoRA (model/prefix_lm.py); XATTN and TRAIN_DECODER do not apply.
 ARCH=${ARCH:-xattn}
+# ARCH=prefix only. Audio tokens: each group of AUDIO_POOL feature vectors is
+# averaged (mean) or stacked side by side (concat). PROJ_LR gives the
+# projector its own learning rate (LR is then LoRA's); for the first
+# LORA_WARMUP epochs only the projector trains. LORA_TARGETS: all (attention
+# and MLP layers) or attn.
+AUDIO_POOL=${AUDIO_POOL:-4}
+AUDIO_MERGE=${AUDIO_MERGE:-mean}
+LORA_R=${LORA_R:-16}
+LORA_TARGETS=${LORA_TARGETS:-all}
+LORA_DROPOUT=${LORA_DROPOUT:-0.05}
+PROJ_LR=${PROJ_LR:-}
+LORA_WARMUP=${LORA_WARMUP:-0}
+PREFIX_SETTINGS="AUDIO_POOL=$AUDIO_POOL AUDIO_MERGE=$AUDIO_MERGE LORA_R=$LORA_R LORA_TARGETS=$LORA_TARGETS LORA_DROPOUT=$LORA_DROPOUT PROJ_LR=$PROJ_LR LORA_WARMUP=$LORA_WARMUP"
+PREFIX_DEFAULTS="AUDIO_POOL=4 AUDIO_MERGE=mean LORA_R=16 LORA_TARGETS=all LORA_DROPOUT=0.05 PROJ_LR= LORA_WARMUP=0"
 case $ARCH in
-    xattn) ;;
+    xattn) [ "$PREFIX_SETTINGS" = "$PREFIX_DEFAULTS" ] \
+                || { echo "AUDIO_*, LORA_* and PROJ_LR only apply with ARCH=prefix" >&2; exit 1; } ;;
     prefix) [ "$XATTN" = 7 ] && [ "$TRAIN_DECODER" = 0 ] \
                 || { echo "ARCH=prefix: XATTN and TRAIN_DECODER do not apply" >&2; exit 1; } ;;
     *) echo "ARCH must be xattn or prefix (got $ARCH)" >&2; exit 1 ;;
@@ -117,6 +132,7 @@ if [ "$KEEP" != best ] || [ "$SNAPSHOT_EVERY" != 0 ] || [ "$CHECKPOINT_EVERY" !=
 fi
 [ -z "$RESUME_FROM" ] || settings+=$'\n'"RESUME_FROM=$RESUME_FROM"
 [ "$ARCH" = xattn ] || settings+=$'\n'"ARCH=$ARCH"
+[ "$PREFIX_SETTINGS" = "$PREFIX_DEFAULTS" ] || settings+=$'\n'"$PREFIX_SETTINGS"
 if [ -f "$RUN_DIR/settings.txt" ]; then
     if ! diff <(cat "$RUN_DIR/settings.txt") <(echo "$settings") > /dev/null; then
         echo "$RUN_DIR was started with different settings (< before, > now):" >&2
@@ -133,7 +149,8 @@ echo "run: $RUN_DIR"
 cache_label=top${CACHE_K}${CACHE_VARIANT}
 [ "$K" -eq 0 ] && cache_label=empty
 if [ "$ARCH" = prefix ]; then
-    echo "arch=prefix decoder=$DECODER_NAME (LoRA r=16, 4x pooled audio) keep=$KEEP snapshot_every=$SNAPSHOT_EVERY checkpoint_every=$CHECKPOINT_EVERY"
+    echo "arch=prefix decoder=$DECODER_NAME keep=$KEEP snapshot_every=$SNAPSHOT_EVERY checkpoint_every=$CHECKPOINT_EVERY"
+    echo "audio tokens: $AUDIO_MERGE of $AUDIO_POOL | LoRA r=$LORA_R on $LORA_TARGETS, dropout $LORA_DROPOUT, warm-up $LORA_WARMUP epochs | projector lr=${PROJ_LR:-$LR}"
 else
     echo "encoder=$ENCODER_NAME decoder=$DECODER_NAME xattn=${XATTN}M train_decoder=$TRAIN_DECODER keep=$KEEP snapshot_every=$SNAPSHOT_EVERY checkpoint_every=$CHECKPOINT_EVERY"
 fi
@@ -199,7 +216,9 @@ fi
 DECODER_ARGS=()
 [ "$TRAIN_DECODER" = 1 ] && DECODER_ARGS=(--train_decoder)
 if [ "$ARCH" = prefix ]; then
-    ARCH_ARGS=(--arch prefix)
+    ARCH_ARGS=(--arch prefix --audio_pool "$AUDIO_POOL" --audio_merge "$AUDIO_MERGE" --lora_r "$LORA_R"
+               --lora_targets "$LORA_TARGETS" --lora_dropout "$LORA_DROPOUT" --lora_warmup_epochs "$LORA_WARMUP")
+    [ -n "$PROJ_LR" ] && ARCH_ARGS+=(--projector_lr "$PROJ_LR")
 else
     ARCH_ARGS=(--arch xattn --attention_size "$XATTN")
 fi

@@ -26,7 +26,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from data.recap_dataset import RecapCollator, RecapDataset
 from evaluate import caption_end_token_ids, generate_caption
-from model.prefix_lm import AudioPrefixLM, build_prefix_lm, load_captioner
+from model.prefix_lm import AudioPrefixConfig, AudioPrefixLM, AudioProjector, build_prefix_lm, load_captioner
 from retrieval.prompt_builder import BASELINE_PROMPT, build_prompt
 
 FEAT = 48            # feature width (differs from the LLM's 64)
@@ -278,17 +278,20 @@ def test_load_captioner_still_loads_recap(tmp_path):
         recap_module.RECAP.from_pretrained = original
 
 
-def _train(monkeypatch, llm_dir, data_files, out, epochs, *extra):
-    import train
+def _argv(llm_dir, data_files, out, epochs, *extra, arch="prefix"):
     csv, h5, cache = data_files
-    argv = ["train.py", "--arch", "prefix", "--decoder_name", llm_dir,
+    return ["train.py", "--arch", arch, "--decoder_name", llm_dir,
             "--train_csv", csv, "--train_hdf5", h5, "--train_retrieval_cache", cache,
             "--val_csv", csv, "--val_hdf5", h5, "--val_retrieval_cache", cache,
             "--output_dir", str(out), "--rag", "--retrieval_k", "2", "--retrieval_strategy", "topk",
             "--num_train_epochs", str(epochs), "--per_device_train_batch_size", "1",
             "--per_device_eval_batch_size", "2", "--learning_rate", "1e-2", "--eval_save_strategy", "epoch",
             "--save_total_limit", "2", "--num_workers", "0", "--logging_steps", "1", *extra]
-    monkeypatch.setattr(sys, "argv", argv)
+
+
+def _train(monkeypatch, llm_dir, data_files, out, epochs, *extra):
+    import train
+    monkeypatch.setattr(sys, "argv", _argv(llm_dir, data_files, out, epochs, *extra))
     train.main()
 
 
@@ -363,3 +366,184 @@ def test_checkpoints_pin_the_llm_revision(prefix, tmp_path, monkeypatch):
     monkeypatch.setattr(pl.AutoModelForCausalLM, "from_pretrained", spy)
     AudioPrefixLM.from_pretrained(str(tmp_path / "ck"))
     assert seen["revision"] == "abc123"
+
+
+# ---- audio tokens: pooling and stacking ----
+
+def test_projector_concat_keeps_what_mean_loses():
+    torch.manual_seed(0)
+    feats = torch.randn(2, ENC_LEN, FEAT)
+    concat = AudioProjector(FEAT, 64, pool=2, merge="concat")
+    out = concat(feats)
+    assert out.shape == (2, ENC_LEN // 2, 64)
+    stacked = torch.cat([feats[:, 0::2], feats[:, 1::2]], dim=-1)      # [v0|v1], [v2|v3], ...
+    assert torch.allclose(out, concat.mlp(concat.norm(stacked)))
+    # Swapping the two vectors of a group keeps their mean but not their order.
+    swapped = feats.clone()
+    swapped[:, 0], swapped[:, 1] = feats[:, 1], feats[:, 0]
+    mean = AudioProjector(FEAT, 64, pool=2, merge="mean")
+    assert torch.allclose(mean(feats), mean(swapped), atol=1e-6)
+    assert not torch.allclose(out[:, 0], concat(swapped)[:, 0])
+    assert torch.allclose(out[:, 1:], concat(swapped)[:, 1:])
+
+
+def test_projector_pool_one_gives_a_token_per_vector():
+    torch.manual_seed(0)
+    feats = torch.randn(1, ENC_LEN, FEAT)
+    mean, concat = (AudioProjector(FEAT, 64, pool=1, merge=m) for m in ("mean", "concat"))
+    concat.load_state_dict(mean.state_dict())                # same shapes at pool 1
+    assert mean(feats).shape == (1, ENC_LEN, 64) and torch.equal(mean(feats), concat(feats))
+    for bad in (dict(pool=0), dict(pool=2, merge="max")):
+        with pytest.raises(ValueError):
+            AudioProjector(FEAT, 64, **{"pool": 2, **bad})
+
+
+def test_audio_merge_is_saved_and_old_checkpoints_default_to_mean(llm_dir, data_files, tmp_path):
+    torch.manual_seed(0)
+    model, tok = build_prefix_lm(llm_dir, feature_width=FEAT, audio_pool=2, audio_merge="concat")
+    assert model.projector.norm.normalized_shape == (2 * FEAT,)
+    batch, _ = _batch(model, tok, data_files)
+    model.eval()
+    model.save_pretrained(tmp_path / "ck")
+    loaded = load_captioner(str(tmp_path / "ck"))
+    assert loaded.config.audio_merge == "concat" and loaded.projector.merge == "concat"
+    with torch.no_grad():
+        assert torch.equal(_forward(model, batch).logits, _forward(loaded, batch).logits)
+        assert _forward(model, batch).logits.shape[:2] == batch["decoder_input_ids"].shape
+    # A config written before the option existed has no audio_merge entry.
+    cfg = json.loads((tmp_path / "ck" / "config.json").read_text())
+    cfg.pop("audio_merge")
+    (tmp_path / "old").mkdir()
+    (tmp_path / "old" / "config.json").write_text(json.dumps(cfg))
+    assert AudioPrefixConfig.from_pretrained(str(tmp_path / "old")).audio_merge == "mean"
+    with pytest.raises(ValueError):
+        AudioPrefixConfig(audio_merge="max")
+
+
+# ---- LoRA options, separate learning rates, projector warm-up ----
+
+def test_lora_targets_attn_leaves_the_mlp_layers_alone(llm_dir):
+    torch.manual_seed(0)
+    model, _ = build_prefix_lm(llm_dir, feature_width=FEAT, lora_targets="attn", lora_r=4, lora_dropout=0.2)
+    lora = [n for n in model._trained_names() if ".lora_" in n]
+    assert lora and not any(t in n for n in lora for t in ("gate_proj", "up_proj", "down_proj"))
+    for target in ("q_proj", "k_proj", "v_proj", "o_proj"):
+        assert any(f"{target}.lora_A" in n for n in lora)
+    a = next(p for n, p in model.named_parameters() if ".lora_A" in n)
+    assert a.shape[0] == 4 and model.config.lora_targets == ["q_proj", "k_proj", "v_proj", "o_proj"]
+    assert model.config.lora_dropout == 0.2
+
+
+def test_linear_schedule_matches_the_trainers_default_and_can_be_delayed():
+    from transformers.optimization import _get_linear_schedule_with_warmup_lr_lambda as default
+    from train import linear_schedule
+    for step in range(0, 101):
+        assert linear_schedule(step, start=0, ramp=5, total=100) == pytest.approx(
+            default(step, num_warmup_steps=5, num_training_steps=100))
+    delayed = [linear_schedule(s, start=40, ramp=5, total=100) for s in range(101)]
+    assert all(v == 0 for v in delayed[:41]) and delayed[45] == 1.0 and delayed[100] == 0.0
+    assert delayed[41:45] == pytest.approx([0.2, 0.4, 0.6, 0.8])
+    assert all(a >= b for a, b in zip(delayed[45:], delayed[46:]))        # decays from there
+
+
+def _trainer(model, tmp_path, **kw):
+    from transformers import TrainingArguments
+    from train import RecapTrainer
+    args = TrainingArguments(output_dir=str(tmp_path), learning_rate=1e-3, num_train_epochs=4,
+                             warmup_ratio=0.05, weight_decay=0.1, report_to=["none"])
+    return RecapTrainer(model=model, args=args, **kw)
+
+
+def test_projector_and_lora_get_their_own_learning_rates(prefix, tmp_path):
+    model, _ = prefix
+    trainer = _trainer(model, tmp_path, projector_lr=1e-2)
+    opt = trainer.create_optimizer()
+    by_param = {id(p): g for g in opt.param_groups for p in g["params"]}
+    trainable = {n: p for n, p in model.named_parameters() if p.requires_grad}
+    assert set(by_param) == {id(p) for p in trainable.values()}          # every weight, once
+    assert sum(len(g["params"]) for g in opt.param_groups) == len(trainable)
+    for n, p in trainable.items():
+        g = by_param[id(p)]
+        assert g["lr"] == (1e-2 if n.startswith("projector.") else 1e-3), n
+        assert g["part"] == ("projector" if n.startswith("projector.") else "lora")
+    assert {g["weight_decay"] for g in opt.param_groups} == {0.0, 0.1}   # as the Trainer splits them
+    # Without the options the Trainer's own optimizer is used: one rate for all.
+    plain = _trainer(model, tmp_path).create_optimizer()
+    assert {g["lr"] for g in plain.param_groups} == {1e-3} and "part" not in plain.param_groups[0]
+
+
+def test_lora_warmup_holds_loras_rate_at_zero(prefix, tmp_path):
+    model, _ = prefix
+    trainer = _trainer(model, tmp_path, lora_warmup_epochs=1)
+    opt = trainer.create_optimizer()
+    sched = trainer.create_scheduler(num_training_steps=40, optimizer=opt)    # 10 steps per epoch
+    rates = []
+    for _ in range(40):
+        rates.append({g["part"]: g["lr"] for g in opt.param_groups})
+        opt.step()
+        sched.step()
+    assert all(r["lora"] == 0 for r in rates[:11]) and rates[11]["lora"] > 0
+    assert rates[0]["projector"] == 0 and rates[2]["projector"] == pytest.approx(1e-3)   # 2 ramp steps
+    assert rates[12]["lora"] == pytest.approx(1e-3)
+    assert rates[-1]["lora"] > 0 and rates[-1]["projector"] > 0
+
+
+def test_train_py_warmup_freezes_lora_then_trains_it(monkeypatch, llm_dir, data_files, tmp_path):
+    out = tmp_path / "run"
+    _train(monkeypatch, llm_dir, data_files, out, 4, "--lora_warmup_epochs", "2", "--projector_lr", "2e-2",
+           "--save_total_limit", "9")
+    def lora_b(step):
+        return [v for k, v in _trained(out / f"checkpoint-{step}").items() if ".lora_B" in k]
+    assert all(not b.any() for b in lora_b(2)) and all(not b.any() for b in lora_b(4))   # 2 steps per epoch
+    assert any(b.any() for b in lora_b(8))
+    proj = lambda step: _trained(out / f"checkpoint-{step}")["projector.mlp.0.weight"]
+    assert not torch.equal(proj(2), proj(4))                    # the projector trains meanwhile
+
+
+def test_train_py_resumes_exactly_across_the_warmup(monkeypatch, llm_dir, data_files, tmp_path, capsys):
+    import shutil
+    extra = ("--lora_warmup_epochs", "2", "--projector_lr", "2e-2", "--save_total_limit", "9")
+    straight, cut = tmp_path / "straight", tmp_path / "cut"
+    _train(monkeypatch, llm_dir, data_files, straight, 4, *extra)
+    shutil.copytree(straight, cut)
+    for step in (6, 8):
+        shutil.rmtree(cut / f"checkpoint-{step}")               # as if killed right after the warm-up
+    (cut / "model.safetensors").unlink()
+    capsys.readouterr()
+    _train(monkeypatch, llm_dir, data_files, cut, 4, *extra, "--resume")
+    assert f"[resume] continuing from {cut / 'checkpoint-4'}" in capsys.readouterr().out
+    a, b = _trained(straight), _trained(cut)
+    assert set(a) == set(b) and all(torch.equal(a[k], b[k]) for k in a)
+    assert any(v.any() for k, v in a.items() if ".lora_B" in k)
+
+
+def test_prefix_options_are_refused_for_recap_and_checked(monkeypatch, llm_dir, data_files, tmp_path):
+    import train
+    for bad in (["--projector_lr", "1e-3"], ["--lora_warmup_epochs", "1"], ["--audio_merge", "concat"],
+                ["--audio_pool", "2"], ["--lora_targets", "attn"], ["--lora_r", "8"]):
+        monkeypatch.setattr(sys, "argv", _argv("gpt2", data_files, tmp_path, 3, *bad, arch="xattn"))
+        with pytest.raises(SystemExit):
+            train.parse_args()
+    for bad in (["--lora_warmup_epochs", "3"], ["--lora_warmup_epochs", "-1"], ["--projector_lr", "0"]):
+        monkeypatch.setattr(sys, "argv", _argv(llm_dir, data_files, tmp_path, 3, *bad))
+        with pytest.raises(SystemExit):
+            train.parse_args()
+    monkeypatch.setattr(sys, "argv", _argv(llm_dir, data_files, tmp_path, 3, "--lora_r", "8"))
+    assert train.parse_args().lora_alpha == 16                  # alpha follows the rank
+
+
+def test_train_py_passes_the_model_options_on(monkeypatch, llm_dir, data_files, tmp_path):
+    out = tmp_path / "run"
+    _train(monkeypatch, llm_dir, data_files, out, 1, "--audio_pool", "2", "--audio_merge", "concat",
+           "--lora_r", "4", "--lora_dropout", "0.2", "--lora_targets", "attn")
+    cfg = json.loads((out / "config.json").read_text())
+    assert (cfg["audio_pool"], cfg["audio_merge"], cfg["lora_r"], cfg["lora_alpha"], cfg["lora_dropout"]) \
+        == (2, "concat", 4, 8, 0.2)
+    assert cfg["lora_targets"] == ["q_proj", "k_proj", "v_proj", "o_proj"]
+    model = load_captioner(str(out))
+    assert model.projector.merge == "concat" and model.projector.pool == 2
+    out2 = tmp_path / "default"
+    _train(monkeypatch, llm_dir, data_files, out2, 1)
+    cfg = json.loads((out2 / "config.json").read_text())
+    assert (cfg["audio_pool"], cfg["audio_merge"], cfg["lora_r"], cfg["lora_alpha"], cfg["lora_dropout"]) \
+        == (4, "mean", 16, 32, 0.05) and len(cfg["lora_targets"]) == 7

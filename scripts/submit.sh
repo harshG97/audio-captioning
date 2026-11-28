@@ -30,6 +30,14 @@
 #   ARCH=prefix              a decoder-only LLM (DECODER_NAME, default Qwen/Qwen2.5-1.5B)
 #                            reading the audio as prefix tokens, with LoRA; defaults
 #                            EPOCHS=20 PATIENCE=3 LR=1e-4                     -> _prefix
+#     With ARCH=prefix only:
+#     AUDIO_POOL=1|2|4       feature vectors per audio token (default 4)      -> _ap2
+#     AUDIO_MERGE=concat     stack them side by side instead of averaging     -> _ap2c
+#     PROJ_LR=1e-3           the projector's own learning rate; LR is then LoRA's -> _plr1e-3
+#     LORA_WARMUP=1          epochs in which only the projector trains        -> _wu1
+#     LORA_TARGETS=attn      LoRA on the attention layers only (default all)  -> _attn
+#     LORA_R=8               LoRA rank (default 16; alpha is twice the rank)  -> _r8
+#     LORA_DROPOUT=0.1       LoRA dropout (default 0.05)                      -> _ld0.1
 #   KEEP=last                train all EPOCHS without early stopping and keep the
 #                            last epoch, as RECAP's code does. snapshots/ gets full,
 #                            resumable checkpoints every CHECKPOINT_EVERY (20)
@@ -143,13 +151,35 @@ case ${KEEP:-best} in
     last) VARIANT+="_last" ;;
     *) echo "KEEP must be best or last (got $KEEP)" >&2; exit 1 ;;
 esac
+PREFIX_SETTINGS="AUDIO_POOL AUDIO_MERGE LORA_R LORA_TARGETS LORA_DROPOUT PROJ_LR LORA_WARMUP"
+NUMBER='^([0-9]+\.?[0-9]*|\.[0-9]+)(e-?[0-9]+)?$'
 case ${ARCH:-xattn} in
-    xattn) ;;
+    xattn)
+        for v in $PREFIX_SETTINGS; do
+            if [ -n "${!v:-}" ]; then echo "$v only applies with ARCH=prefix" >&2; exit 1; fi
+        done ;;
     prefix)
         if { [ -n "${XATTN:-}" ] && [ "$XATTN" != 7 ]; } || [ "${TRAIN_DECODER:-0}" != 0 ]; then
             echo "ARCH=prefix has no cross-attention and trains LoRA: XATTN and TRAIN_DECODER do not apply" >&2; exit 1
         fi
         VARIANT+="_prefix"
+        case ${AUDIO_POOL:-4} in 1|2|4) ;; *) echo "AUDIO_POOL must be 1, 2 or 4 (got $AUDIO_POOL)" >&2; exit 1 ;; esac
+        case ${AUDIO_MERGE:-mean} in mean|concat) ;; *) echo "AUDIO_MERGE must be mean or concat (got $AUDIO_MERGE)" >&2; exit 1 ;; esac
+        case ${LORA_TARGETS:-all} in all|attn) ;; *) echo "LORA_TARGETS must be all or attn (got $LORA_TARGETS)" >&2; exit 1 ;; esac
+        [[ ${LORA_R:-16} =~ ^[1-9][0-9]*$ ]] || { echo "LORA_R must be a positive whole number (got $LORA_R)" >&2; exit 1; }
+        for v in LORA_DROPOUT PROJ_LR LORA_WARMUP; do
+            if [ -n "${!v:-}" ] && ! [[ ${!v} =~ $NUMBER ]]; then echo "$v must be a number (got ${!v})" >&2; exit 1; fi
+        done
+        # Each non-default setting shows in the run name.
+        if [ "${AUDIO_POOL:-4}" != 4 ] || [ "${AUDIO_MERGE:-mean}" != mean ]; then
+            VARIANT+="_ap${AUDIO_POOL:-4}"
+            if [ "${AUDIO_MERGE:-mean}" = concat ]; then VARIANT+="c"; fi
+        fi
+        if [ "${LORA_R:-16}" != 16 ]; then VARIANT+="_r$LORA_R"; fi
+        if [ "${LORA_TARGETS:-all}" != all ]; then VARIANT+="_$LORA_TARGETS"; fi
+        if [ "${LORA_DROPOUT:-0.05}" != 0.05 ]; then VARIANT+="_ld$LORA_DROPOUT"; fi
+        if [ -n "${PROJ_LR:-}" ]; then VARIANT+="_plr$PROJ_LR"; fi
+        if [ -n "${LORA_WARMUP:-}" ] && [ "$LORA_WARMUP" != 0 ]; then VARIANT+="_wu$LORA_WARMUP"; fi
         # An LLM with LoRA converges in far fewer epochs than RECAP's
         # cross-attention, at a higher learning rate.
         export DECODER_NAME=${DECODER_NAME:-Qwen/Qwen2.5-1.5B} EPOCHS=${EPOCHS:-20} \
@@ -270,7 +300,7 @@ if [ "$LOCAL" = 1 ]; then
     log=logs/recap-$job-$(date +%Y%m%d-%H%M%S).log
     if [ "${DRY_RUN:-0}" = 1 ]; then
         echo "bash $script 2>&1 | tee $log"
-        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT|AUDIO_DIR|HF_HOME)=' | sort
+        env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|AUDIO_POOL|AUDIO_MERGE|LORA_R|LORA_TARGETS|LORA_DROPOUT|PROJ_LR|LORA_WARMUP|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT|AUDIO_DIR|HF_HOME)=' | sort
         exit 0
     fi
     echo "log: $log"
@@ -285,7 +315,7 @@ if [ -n "${NOTIFY_EMAIL:-}" ]; then
 fi
 if [ "${DRY_RUN:-0}" = 1 ]; then
     printf 'sbatch'; printf ' %q' "${args[@]}" "$@" "$script"; echo
-    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT)=' | sort
+    env | grep -E '^(RUN_NAME|K|EPOCHS|PATIENCE|SEED|DATA_DIR|FEAT_DIR|CACHE_DIR|CACHE_VARIANT|RUNS_DIR|REUSE_FROM|EVAL_SETS|SKIP_SPICE|XATTN|TRAIN_DECODER|ARCH|LR|AUDIO_POOL|AUDIO_MERGE|LORA_R|LORA_TARGETS|LORA_DROPOUT|PROJ_LR|LORA_WARMUP|PROMPT_DROPOUT|KEEP|SNAPSHOT_EVERY|CHECKPOINT_EVERY|RESUME_FROM|ENCODER_NAME|DECODER_NAME|CLAP|BEATS_CKPT|POOL|MATCH_FEAT_DIR|EMB_DIR|DATASTORE_DIR|CAP|DROP_PCT)=' | sort
     exit 0
 fi
 sbatch "${args[@]}" "$@" "$script"

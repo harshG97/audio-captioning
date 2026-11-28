@@ -36,6 +36,10 @@ from transformers import (AutoModelForCausalLM, AutoTokenizer, GenerationConfig,
 from transformers.modeling_outputs import CausalLMOutput
 
 LORA_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
+# Named choices for which LLM layers get LoRA adapters: attention and MLP
+# (the default), or the attention projections only.
+LORA_TARGET_SETS = {"all": LORA_TARGETS, "attn": LORA_TARGETS[:4]}
+AUDIO_MERGES = ("mean", "concat")
 
 
 class AudioPrefixConfig(PretrainedConfig):
@@ -44,8 +48,13 @@ class AudioPrefixConfig(PretrainedConfig):
     def __init__(self, llm_name: str = "Qwen/Qwen2.5-1.5B", feature_width: int = 768,
                  audio_pool: int = 4, lora_r: int = 16, lora_alpha: int = 32,
                  lora_dropout: float = 0.05, lora_targets=LORA_TARGETS,
-                 llm_revision: Optional[str] = None, **kwargs):
+                 llm_revision: Optional[str] = None, audio_merge: str = "mean", **kwargs):
         super().__init__(**kwargs)
+        if audio_merge not in AUDIO_MERGES:
+            raise ValueError(f"audio_merge must be one of {AUDIO_MERGES} (got {audio_merge!r})")
+        # How each group of audio_pool feature vectors becomes one audio token:
+        # "mean" averages them, "concat" puts them side by side (nothing lost).
+        self.audio_merge = audio_merge
         self.llm_name = llm_name
         # Hub commit the LLM was trained from, so a checkpoint's adapters are
         # never loaded onto updated base weights (None for a local folder).
@@ -59,22 +68,31 @@ class AudioPrefixConfig(PretrainedConfig):
 
 
 class AudioProjector(nn.Module):
-    """(B, T, feature_width) -> (B, T / pool, llm_width): average-pool groups
-    of `pool` consecutive feature vectors, then LayerNorm and a 2-layer MLP."""
+    """(B, T, feature_width) -> (B, T / pool, llm_width): each group of `pool`
+    consecutive feature vectors becomes one audio token, by averaging them
+    ("mean") or by placing them side by side ("concat", which keeps every
+    value), followed by LayerNorm and a 2-layer MLP."""
 
-    def __init__(self, feature_width: int, llm_width: int, pool: int):
+    def __init__(self, feature_width: int, llm_width: int, pool: int, merge: str = "mean"):
         super().__init__()
+        if pool < 1:
+            raise ValueError(f"audio_pool must be at least 1 (got {pool})")
+        if merge not in AUDIO_MERGES:
+            raise ValueError(f"merge must be one of {AUDIO_MERGES} (got {merge!r})")
         self.pool = pool
-        self.norm = nn.LayerNorm(feature_width)
-        self.mlp = nn.Sequential(nn.Linear(feature_width, llm_width), nn.GELU(),
+        self.merge = merge
+        width = feature_width * pool if merge == "concat" else feature_width
+        self.norm = nn.LayerNorm(width)
+        self.mlp = nn.Sequential(nn.Linear(width, llm_width), nn.GELU(),
                                  nn.Linear(llm_width, llm_width))
 
     def forward(self, feats: torch.Tensor) -> torch.Tensor:
         b, t, d = feats.shape
         if t % self.pool:
             raise ValueError(f"{t} feature vectors per clip do not split into groups of {self.pool}")
-        pooled = feats.view(b, t // self.pool, self.pool, d).mean(dim=2)
-        return self.mlp(self.norm(pooled))
+        groups = feats.view(b, t // self.pool, self.pool, d)
+        merged = groups.reshape(b, t // self.pool, self.pool * d) if self.merge == "concat" else groups.mean(dim=2)
+        return self.mlp(self.norm(merged))
 
 
 class AudioPrefixLM(PreTrainedModel):
@@ -93,7 +111,8 @@ class AudioPrefixLM(PreTrainedModel):
                           lora_dropout=config.lora_dropout, target_modules=list(config.lora_targets),
                           bias="none", task_type="CAUSAL_LM")
         self.llm = get_peft_model(base, lora)
-        self.projector = AudioProjector(config.feature_width, base.config.hidden_size, config.audio_pool)
+        self.projector = AudioProjector(config.feature_width, base.config.hidden_size, config.audio_pool,
+                                        getattr(config, "audio_merge", "mean"))
 
     # ---- inputs -------------------------------------------------------------
 
@@ -178,13 +197,15 @@ class AudioPrefixLM(PreTrainedModel):
 
 
 def build_prefix_lm(llm_name: str, feature_width: int, audio_pool: int = 4, lora_r: int = 16,
-                    lora_alpha: int = 32, lora_dropout: float = 0.05):
+                    lora_alpha: int = 32, lora_dropout: float = 0.05, audio_merge: str = "mean",
+                    lora_targets: str = "all"):
     """Model and tokenizer for training. The start token (fed after the audio)
     and the end token are the tokenizer's EOS, as for a document boundary."""
     tokenizer = AutoTokenizer.from_pretrained(llm_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     config = AudioPrefixConfig(llm_name=llm_name, feature_width=feature_width, audio_pool=audio_pool,
+                               audio_merge=audio_merge, lora_targets=LORA_TARGET_SETS[lora_targets],
                                lora_r=lora_r, lora_alpha=lora_alpha, lora_dropout=lora_dropout,
                                decoder_start_token_id=tokenizer.eos_token_id,
                                eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.pad_token_id)
@@ -193,7 +214,7 @@ def build_prefix_lm(llm_name: str, feature_width: int, audio_pool: int = 4, lora
     trained = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
     print(f"[prefix_lm] {llm_name}: trainable {trained:,} / {total:,} parameters "
-          f"(projector + LoRA r={lora_r}); {audio_pool}x pooled audio; "
+          f"(projector + LoRA r={lora_r} on {lora_targets}); audio tokens: {audio_merge} of {audio_pool}; "
           f"revision {model.config.llm_revision or 'local'}")
     return model, tokenizer
 

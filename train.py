@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import functools
 import csv
 import json
 import os
@@ -24,7 +25,7 @@ from transformers import EarlyStoppingCallback, Trainer, TrainerCallback, Traini
 from data.access_id import DATASETS
 from data.recap_dataset import RecapCollator, RecapDataset
 from model.build_recap import ATTENTION_SIZE_TO_REDUCE_FACTOR, build_recap
-from model.prefix_lm import AudioPrefixLM, build_prefix_lm
+from model.prefix_lm import AUDIO_MERGES, LORA_TARGET_SETS, AudioPrefixLM, build_prefix_lm
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,8 +48,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--decoder_name", type=str, default="gpt2")
     p.add_argument("--audio_pool", type=int, default=4,
                    help="prefix: average this many feature vectors per audio token (default 4).")
+    p.add_argument("--audio_merge", choices=list(AUDIO_MERGES), default="mean",
+                   help="prefix: how each group of --audio_pool vectors becomes one audio token: "
+                        "mean (default) averages them, concat places them side by side.")
     p.add_argument("--lora_r", type=int, default=16, help="prefix: LoRA rank (default 16).")
-    p.add_argument("--lora_alpha", type=int, default=32, help="prefix: LoRA alpha (default 32).")
+    p.add_argument("--lora_alpha", type=int, default=None,
+                   help="prefix: LoRA alpha (default: twice the rank).")
+    p.add_argument("--lora_dropout", type=float, default=0.05, help="prefix: LoRA dropout (default 0.05).")
+    p.add_argument("--lora_targets", choices=list(LORA_TARGET_SETS), default="all",
+                   help="prefix: LLM layers that get LoRA adapters: all (default; attention and "
+                        "MLP) or attn (attention only).")
+    p.add_argument("--projector_lr", type=float, default=None,
+                   help="prefix: learning rate of the audio projector, which starts from "
+                        "scratch (default: --learning_rate, which then applies to LoRA only).")
+    p.add_argument("--lora_warmup_epochs", type=float, default=0.0,
+                   help="prefix: keep LoRA's learning rate at 0 for this many epochs, so only "
+                        "the projector trains at first (default 0).")
     p.add_argument("--max_length", type=int, default=128)
     p.add_argument(
         "--prompt_dropout", type=float, default=0.0,
@@ -183,6 +198,19 @@ def parse_args() -> argparse.Namespace:
                                   is not None or args.train_decoder or args.xattn_zero_init):
         p.error("--arch prefix has no cross-attention and trains LoRA, not the decoder: "
                 "drop --attention_size / --cross_attention_reduce_factor / --train_decoder / --xattn_zero_init")
+    prefix_only = {"--audio_pool": args.audio_pool != 4, "--audio_merge": args.audio_merge != "mean",
+                   "--lora_r": args.lora_r != 16, "--lora_alpha": args.lora_alpha is not None,
+                   "--lora_dropout": args.lora_dropout != 0.05, "--lora_targets": args.lora_targets != "all",
+                   "--projector_lr": args.projector_lr is not None,
+                   "--lora_warmup_epochs": args.lora_warmup_epochs != 0}
+    if args.arch != "prefix" and any(prefix_only.values()):
+        p.error(f"{', '.join(k for k, v in prefix_only.items() if v)} only apply to --arch prefix")
+    if args.lora_alpha is None:
+        args.lora_alpha = 2 * args.lora_r
+    if args.lora_warmup_epochs < 0 or args.lora_warmup_epochs >= args.num_train_epochs:
+        p.error("--lora_warmup_epochs must be 0 or more and below --num_train_epochs")
+    if args.projector_lr is not None and args.projector_lr <= 0:
+        p.error("--projector_lr must be positive")
     if args.attention_size is not None:
         args.cross_attention_reduce_factor = ATTENTION_SIZE_TO_REDUCE_FACTOR[args.attention_size]
     elif args.cross_attention_reduce_factor is None:
@@ -261,6 +289,17 @@ def _own_generator(loader, seed: int):
     return loader
 
 
+def linear_schedule(step: int, start: int, ramp: int, total: int) -> float:
+    """Learning-rate factor of the Trainer's default schedule (linear warm-up
+    over `ramp` steps, then linear decay to 0 at `total`), delayed so that it
+    is 0 until step `start`."""
+    if step < start:
+        return 0.0
+    if step < start + ramp:
+        return (step - start) / max(1, ramp)
+    return max(0.0, (total - step) / max(1, total - start - ramp))
+
+
 class RecapTrainer(Trainer):
     """Trainer that starts the evaluation dataloader's workers once and keeps
     dataloader worker seeding out of the global RNG.
@@ -271,7 +310,53 @@ class RecapTrainer(Trainer):
     while the accelerator keeps the old ones alive. Over a long run that is
     num_workers more processes per evaluation (about 570 after 70 epochs with
     8 workers), until the machine runs out of memory. Reusing the prepared
-    loader keeps one set of workers for the whole run."""
+    loader keeps one set of workers for the whole run.
+
+    For the prefix model it can also give the audio projector its own
+    learning rate (projector_lr) and hold LoRA's learning rate at 0 for the
+    first lora_warmup_epochs, so the projector learns useful audio tokens
+    before the LLM starts to adapt. Both live in the optimizer's parameter
+    groups and the scheduler, so a resumed run continues them exactly."""
+
+    def __init__(self, *args, projector_lr=None, lora_warmup_epochs=0.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.projector_lr = projector_lr
+        self.lora_warmup_epochs = lora_warmup_epochs
+
+    def _split_rates(self) -> bool:
+        return self.projector_lr is not None or self.lora_warmup_epochs > 0
+
+    def create_optimizer(self):
+        if not self._split_rates() or self.optimizer is not None:
+            return super().create_optimizer()
+        decay = set(self.get_decay_parameter_names(self.model))
+        groups = []          # each tagged with its part, which create_scheduler reads
+        for part, lr in (("projector", self.projector_lr or self.args.learning_rate),
+                         ("lora", self.args.learning_rate)):
+            for decays in (True, False):
+                params = [p for n, p in self.model.named_parameters() if p.requires_grad
+                          and n.startswith("projector.") == (part == "projector") and (n in decay) == decays]
+                if params:
+                    groups.append({"params": params, "lr": lr, "part": part,
+                                   "weight_decay": self.args.weight_decay if decays else 0.0})
+        n_grouped = sum(len(g["params"]) for g in groups)
+        assert n_grouped == sum(p.requires_grad for p in self.model.parameters())
+        optimizer_cls, optimizer_kwargs = self.get_optimizer_cls_and_kwargs(self.args, self.model)
+        self.optimizer = optimizer_cls(groups, **optimizer_kwargs)     # the Trainer's own optimizer
+        return self.optimizer
+
+    def create_scheduler(self, num_training_steps: int, optimizer=None):
+        if self.lora_warmup_epochs <= 0 or self.lr_scheduler is not None:
+            return super().create_scheduler(num_training_steps, optimizer)
+        optimizer = self.optimizer if optimizer is None else optimizer
+        ramp = self.args.get_warmup_steps(num_training_steps)
+        hold = round(self.lora_warmup_epochs * num_training_steps / self.args.num_train_epochs)
+        self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, [
+            functools.partial(linear_schedule, start=hold if g["part"] == "lora" else 0,
+                              ramp=ramp, total=num_training_steps)
+            for g in optimizer.param_groups])
+        self._created_lr_scheduler = True
+        return self.lr_scheduler
 
     def get_eval_dataloader(self, eval_dataset=None):
         # evaluate() passes self.eval_dataset itself, not None.
@@ -383,8 +468,11 @@ def main() -> None:
             llm_name=args.decoder_name,
             feature_width=feature_width(args.train_hdf5),
             audio_pool=args.audio_pool,
+            audio_merge=args.audio_merge,
             lora_r=args.lora_r,
             lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            lora_targets=args.lora_targets,
         )
     else:
         model, tokenizer = build_recap(
@@ -484,6 +572,8 @@ def main() -> None:
         data_collator=collator,
         tokenizer=tokenizer,
         callbacks=callbacks or None,
+        projector_lr=args.projector_lr,
+        lora_warmup_epochs=args.lora_warmup_epochs,
     )
 
     resume_from = resume_checkpoint(args.output_dir) if args.resume else None

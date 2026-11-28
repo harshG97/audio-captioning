@@ -272,6 +272,24 @@ ARCH=prefix FEAT_DIR=$HOME/scratch/recap/features_beats TAG=beats scripts/submit
 Evaluation, the audio ablation and the copy baseline work as for RECAP;
 `evaluate.py` and `scripts/ablate_audio.py` detect the model type.
 
+Options for `ARCH=prefix` runs (each non-default value shows in the run
+name; a GPT-2 run refuses them):
+
+| Setting | Meaning | Default | Suffix |
+|---|---|---|---|
+| `AUDIO_POOL=1\|2\|4` | feature vectors per audio token: 4, 2 or 1 give 31, 62 or 124 tokens from the BEATs features | 4 | `_ap2` |
+| `AUDIO_MERGE=concat` | stack the vectors of a group side by side instead of averaging them, so nothing is lost | mean | `_ap2c` |
+| `PROJ_LR=1e-3` | the projector's own learning rate (it starts from scratch); `LR` is then LoRA's alone | `LR` | `_plr1e-3` |
+| `LORA_WARMUP=1` | epochs in which LoRA's learning rate stays 0, so only the projector trains | 0 | `_wu1` |
+| `LORA_TARGETS=attn` | LoRA on the attention layers only | all (attention and MLP) | `_attn` |
+| `LORA_R=8` | LoRA rank; alpha is twice the rank | 16 | `_r8` |
+| `LORA_DROPOUT=0.1` | LoRA dropout | 0.05 | `_ld0.1` |
+
+`LR` itself is not in the run name: give runs that differ only in `LR` their
+own `TAG`. The separate rates and the warm-up live in the optimizer's
+parameter groups and the scheduler, so an interrupted run resumes them
+exactly. Checkpoints made before these options load unchanged.
+
 **More training data.** The paper split trains on 42,797 of AudioCaps 2.0's
 91,254 train clips. `scripts/submit.sh expand-data` (after `preprocess`)
 adds the other 48,457, filtered by `data/build_expanded_split.py`:
